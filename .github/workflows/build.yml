@@ -1,0 +1,454 @@
+# ============================================================================
+#  .github/workflows/build.yml
+#
+#  在 GitHub 的云端构建，产出可以直接下载的安装包：
+#    Windows -> CYSC-Setup.exe（Inno Setup 安装程序）+ 便携版 zip
+#    macOS   -> CYSC.dmg
+#
+#  为什么用 CI 打 macOS 包：本项目的开发机是 Windows + MSVC，**无法交叉编译
+#  macOS**（缺 macOS 版 Qt、SDK、clang、codesign）。GitHub 对公开仓库免费提供
+#  macOS 运行器，等于借一台 Mac 云机器来打包。
+#
+#  触发方式：
+#    - 推送到 main / master
+#    - 打 tag（v*）
+#    - 在仓库 Actions 页面手动点 "Run workflow"
+#
+#  产物在每次运行的 "Artifacts" 区域下载，保留 30 天。
+#
+#  ⚠ 两个包都**没有代码签名**：
+#    - Windows：SmartScreen 提示"未知发布者"，点"更多信息 -> 仍要运行"
+#    - macOS  ：Apple Silicon 上会提示"已损坏"，用户需要跑一次
+#               xattr -cr /Applications/CYSC*.app
+#               要消除这个提示必须买 Apple 开发者账号做签名 + 公证。
+# ============================================================================
+
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支重复推送时，取消上一次还在跑的构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- Windows
+  windows:
+    name: Windows 安装包
+    runs-on: windows-latest
+
+    steps:
+      - name: 取源码
+        uses: actions/checkout@v4
+
+      # 装 Qt 6.8.0（Windows 侧）。
+      #
+      # 为什么两个平台版本不同：macOS 上 6.8.0 **链接直接失败** ——
+      #   ld: framework 'AGL' not found
+      # AGL 是 Apple 远古的 OpenGL 框架（10.14 起废弃、新版 SDK 已删除），
+      # runner 上是 Xcode 26.6，Qt 6.8.0 的 macOS CMake 配置会带出这个引用，
+      # 必须用 6.11.0。而 6.11.0 的 win64_msvc2022_64 包在 Qt 服务器上取不到，
+      # 所以 Windows 侧继续用 6.8.0。
+      #
+      # 对这个小项目来说版本差异无影响（只用 Core/Gui/Widgets/Sql 的基本功能）。
+      - name: 安装 Qt 6.8.0
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.0'
+          arch: win64_msvc2022_64
+          cache: true
+
+      # 用 vswhere 定位 MSVC 并建立环境，再配置 + 编译。
+      #
+      # 为什么用 vswhere 而不是写死路径：GitHub 的 windows 运行器上装的是
+      # Visual Studio 2022 **Enterprise**，而本机是 Community —— 写死
+      # "C:\Program Files\Microsoft Visual Studio\2022\Community\..." 会直接
+      # 找不到文件。vswhere 是微软官方用来定位 VS 的工具，运行器上自带。
+      - name: 配置与编译
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * `
+                       -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                       -property installationPath
+          if (-not $vsPath) { throw "找不到 Visual Studio（vswhere 返回空）" }
+          Write-Host "Visual Studio: $vsPath"
+
+          # 在同一个 shell 里导入 MSVC 环境变量（vcvars 是个 .bat，
+          # 只能用 cmd 跑，然后把结果环境导回 pwsh）
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "找不到 $vcvars" }
+          cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] -ErrorAction SilentlyContinue
+            }
+          }
+
+          cmake -S . -B build/ci -G Ninja `
+                -DCMAKE_BUILD_TYPE=Release `
+                -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+                -DCYSC_BUILD_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { throw "cmake 配置失败：$LASTEXITCODE" }
+
+          cmake --build build/ci --parallel
+          if ($LASTEXITCODE -ne 0) { throw "编译失败：$LASTEXITCODE" }
+
+      # 跑测试。CTest 会把 Qt 的 bin/plugins 注入环境，所以不用额外设 PATH。
+      - name: 跑测试
+        shell: pwsh
+        run: |
+          ctest --test-dir build/ci --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "测试失败：$LASTEXITCODE" }
+
+      # 打安装程序（Inno Setup）。
+      # windows 运行器预装了 Inno Setup 6。
+      #
+      # 顺序很重要：installer.iss 里的 [Files] 引用的是
+      #   ..\build\package\CYSC\*           ← 暂存目录
+      #   ..\build\package\vc_redist.x64.exe ← VC++ 运行库
+      # 两者都必须**先就位**再编译，否则 ISCC 报 "No files found matching"。
+      # VC++ 运行库不进仓库（见 .gitignore），这里从微软官方链接现取。
+      - name: 准备暂存目录与 VC++ 运行库
+        shell: pwsh
+        run: |
+          $stage = "build/package/CYSC"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          # CI 里 CMake 产物名是 ASCII 的 cysc-taskbar.exe；
+          # 交付用的中文名在这里改（原因见 CMakeLists.txt 的注释）。
+          Copy-Item build/ci/cysc-taskbar.exe "$stage/CYSC任务管理.exe"
+
+          # 收集 Qt 依赖
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations `
+              --no-opengl-sw --dir $stage "$stage/CYSC任务管理.exe"
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt 失败：$LASTEXITCODE" }
+
+          # installer.iss 与 .isl / .ico 同目录，ISCC 按 .iss 位置解析相对路径
+          Copy-Item resources/app.ico "scripts/app.ico"
+          Copy-Item resources/redist/ChineseSimplified.isl "scripts/ChineseSimplified.isl"
+
+          # VC++ 2015-2022 x64 运行库（微软官方直链）
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' `
+              -OutFile 'build/package/vc_redist.x64.exe'
+          $sz = (Get-Item 'build/package/vc_redist.x64.exe').Length
+          Write-Host "vc_redist.x64.exe = $([math]::Round($sz/1MB,2)) MB"
+          if ($sz -lt 1000000) { throw "vc_redist 下载不完整" }
+
+          Write-Host "--- 暂存目录 ---"
+          Get-ChildItem $stage | Select-Object -ExpandProperty Name
+
+      - name: 编译安装程序
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "找不到 ISCC.exe，Inno Setup 未安装" }
+          Write-Host "用 $iscc 编译"
+
+          # OutputDir 在 installer.iss 里是 ..\build\package（相对 .iss），
+          # 也就是仓库根的 build/package/ —— 正是我们放暂存目录的地方。
+          & $iscc "scripts/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 失败：$LASTEXITCODE" }
+
+          Write-Host "--- 产物 ---"
+          Get-ChildItem build/package -File | Select-Object Name, Length
+
+      - name: 打便携版 zip
+        shell: pwsh
+        run: |
+          # 用 .NET 的 ZipFile 而不是 Compress-Archive：后者对中文文件名
+          # 在某些 Windows PowerShell 版本上会乱码。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = "build/package/CYSC-portable.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+              (Resolve-Path "build/package/CYSC").Path,
+              (Join-Path (Get-Location) $zip),
+              [System.IO.Compression.CompressionLevel]::Optimal,
+              $true)
+          Write-Host "zip = $([math]::Round((Get-Item $zip).Length/1MB,2)) MB"
+
+      - name: 上传 Windows 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CYSC-Windows
+          # 只要交付用的两个，不要把 vc_redist 也上传（它是中间件）
+          path: |
+            build/package/CYSC任务管理-安装程序.exe
+            build/package/CYSC-portable.zip
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ macOS
+  macos:
+    name: macOS dmg
+    runs-on: macos-latest
+
+    steps:
+      - name: 取源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Qt 6.11.0
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.0'
+          cache: true
+
+      # 先把环境打出来。CI 失败时日志是唯一线索，提前打印能省一轮排查。
+      #
+      # 这一步是**因为 macOS 第一次构建失败**而加的：当时失败在「配置与编译」，
+      # 而这一节同时包含 cmake 配置和编译，日志又必须登录 GitHub 才能看，
+      # 所以完全无法判断到底是哪一步、什么原因。
+      # 现在把版本、路径、关键文件是否存在都打出来，并拆成两个独立 step。
+      - name: 环境诊断
+        run: |
+          echo "=== 系统 ==="
+          uname -a
+          sw_vers
+          echo "=== 工具链 ==="
+          cmake --version | head -1
+          ninja --version
+          c++ --version | head -1
+          echo "=== Qt ==="
+          echo "QT_ROOT_DIR = $QT_ROOT_DIR"
+          echo "Qt6_DIR     = $Qt6_DIR"
+          if [ -z "$QT_ROOT_DIR" ]; then
+            echo "!! QT_ROOT_DIR 为空 —— install-qt-action 没设好，CMAKE_PREFIX_PATH 会失败"
+          fi
+          ls -d "$QT_ROOT_DIR" 2>/dev/null || echo "!! QT_ROOT_DIR 目录不存在"
+          ls "$QT_ROOT_DIR/lib/cmake" 2>/dev/null | head -20 || echo "!! 找不到 Qt 的 cmake 包目录"
+          echo "=== 关键组件是否齐全（本项目要 Core/Gui/Widgets/Sql）==="
+          for m in Qt6Core Qt6Gui Qt6Widgets Qt6Sql; do
+            if ls "$QT_ROOT_DIR/lib/cmake/$m" >/dev/null 2>&1; then
+              echo "  ok  $m"
+            else
+              echo "  !!  缺 $m"
+            fi
+          done
+          echo "=== SQLite 驱动插件（程序运行必需）==="
+          find "$QT_ROOT_DIR/plugins/sqldrivers" -name "*sqlite*" 2>/dev/null || echo "!! 找不到 sqlite 驱动"
+
+      - name: CMake 配置
+        # 用 tee 同时输出到控制台与文件，并且 **失败也继续** —— 日志会被下面的
+        # 上传步骤带走。为什么这么做：GitHub 的 job 日志必须登录才能看，
+        # 而 artifact 是公开可下的；macOS 构建失败时我在无账号的情况下
+        # 完全拿不到错误信息，只能靠这个把日志带出来。
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cmake -S . -B build/ci \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+                -DCYSC_BUILD_TESTS=ON 2>&1 | tee "$RUNNER_TEMP/configure.log"
+          echo "--- 配置后 CMakeCache 里认到的 Qt ---"
+          grep -iE "Qt6|QT_" build/ci/CMakeCache.txt 2>/dev/null | head -30 \
+            | tee -a "$RUNNER_TEMP/configure.log" || true
+          exit ${PIPESTATUS[0]}
+
+      - name: 编译
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cmake --build build/ci --parallel 2>&1 | tee "$RUNNER_TEMP/build.log"
+          echo "--- 产物 ---"
+          find build/ci -maxdepth 1 \( -name "*.app" -o -name "*.dylib" -o -name "CYSC*" \) \
+            | tee -a "$RUNNER_TEMP/build.log" || true
+          exit ${PIPESTATUS[0]}
+
+      - name: 跑测试
+        # -V（verbose）会打出 CTest 实际执行的命令行，以及"找不到可执行文件"
+        # 这类诊断。日志同时写文件，后面作为 artifact 上传 ——
+        # GitHub 的 job 日志要登录才能看，失败时 artifact 是唯一拿得到的材料。
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          export CYSC_TEST_TMPDIR="$(mktemp -d)"
+          ctest --test-dir build/ci --output-on-failure -V 2>&1 \
+            | tee "$RUNNER_TEMP/ctest.log"
+          exit ${PIPESTATUS[0]}
+
+      # 放在「跑测试」之后，这样 ctest.log 也一起带走。
+      # if: always() 保证即使前面失败也上传。
+      - name: 上传构建与测试日志（成功失败都传）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-build-logs
+          path: |
+            ${{ runner.temp }}/configure.log
+            ${{ runner.temp }}/build.log
+            ${{ runner.temp }}/ctest.log
+          if-no-files-found: warn
+
+      - name: 准备 Python 绘图库
+        # tools/make_icon.py 用 Pillow 画图标。macOS runner 自带 python3，
+        # 但不带 Pillow，需要装一次。
+        run: python3 -m pip install --quiet --disable-pip-version-check pillow
+
+      - name: 生成 .icns 图标
+        run: |
+          # ⚠ 不要用 `sips` 从 app.ico 转 —— **sips 不支持 ICO 格式**，
+          # 原来就是那么写的，CI 上直接报错、整个 macOS job 卡在这一步。
+          #
+          # 改从 tools/make_icon.py 出图：图标图案的源头本来就是这个脚本
+          # （用 Pillow 画深底圆角 + 青绿对勾 + 对勾），加个 --icns 参数
+          # 让它顺便产出 iconutil 需要的 .iconset 目录，质量最好也最省事。
+          python3 tools/make_icon.py --icns
+          ls -l app.iconset
+
+          # iconutil 是 macOS 自带，把 iconset 合成 .icns
+          iconutil -c icns app.iconset -o resources/app.icns
+          ls -l resources/app.icns
+
+          # 放进 bundle。CMake 已设 MACOSX_BUNDLE_ICON_FILE=app.icns，
+          # 所以 Info.plist 里的 CFBundleIconFile 会指向它。
+          #
+          # ⚠ Contents/Resources 目录必须自己建：CMake 的
+          # MACOSX_BUNDLE_ICON_FILE 只是往 Info.plist 写一个键，
+          # **不会创建那个目录**（本项目没有自定义 Info.plist，
+          # 系统默认模板也没带 Resources）。不建就会：
+          #   cp: .../cysc-taskbar.app/Contents/Resources: No such file or directory
+          APP=$(find build/ci -maxdepth 1 -name "*.app" -type d | head -1)
+          echo "APP=$APP"
+          mkdir -p "$APP/Contents/Resources"
+          cp resources/app.icns "$APP/Contents/Resources/"
+          echo "--- bundle 结构确认 ---"
+          ls -l "$APP/Contents/"
+          ls -l "$APP/Contents/Resources/"
+          echo "--- Info.plist 里的图标键 ---"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$APP/Contents/Info.plist" \
+            || echo "!! Info.plist 里没有 CFBundleIconFile"
+
+      - name: 收集 Qt 依赖到 bundle
+        run: |
+          APP=$(find build/ci -maxdepth 1 -name "*.app" -type d | head -1)
+          "$QT_ROOT_DIR/bin/macdeployqt" "$APP" -verbose=1
+
+      - name: 打成 dmg
+        run: |
+          APP=$(find build/ci -maxdepth 1 -name "*.app" -type d | head -1)
+          mkdir -p build/ci/package
+          DMG="build/ci/package/CYSC.dmg"
+          rm -f "$DMG"
+          hdiutil create -volname "CYSC 任务栏" -srcfolder "$APP" \
+                  -ov -format UDZO "$DMG"
+          ls -lh build/ci/package/
+
+      # 未签名的 app 在 Apple Silicon 上会被 Gatekeeper 拦。
+      # 这里把"怎么打开"写成一个说明文件放进产物里。
+      #
+      # ⚠ 注意下面 heredoc 的缩进：`run: |` 是 YAML 块标量，
+      # **块里任何一行都不能顶格**（顶格就等于结束这个块，YAML 直接报错）。
+      # 所以正文和 EOF 都缩进到与命令同级，bash 的 <<- 会自己吃掉前导 tab，
+      # 这里用 <<'EOF' 且让正文也保持同样缩进即可。
+      - name: 附上打开说明
+        run: |
+          cat > build/ci/package/请先读我-macOS.txt <<'EOF'
+          CYSC 任务栏 —— macOS 版
+          ========================
+
+          【为什么打开时提示"已损坏"或"无法验证开发者"】
+          这个包没有做苹果的代码签名与公证（需要付费的 Apple 开发者账号）。
+          Apple Silicon 的 macOS 会因此直接拒绝运行。
+
+          【怎么打开】
+          1. 把 CYSC 拖进「应用程序」文件夹
+          2. 打开「终端」，执行下面这行（把路径换成实际路径）：
+
+               xattr -cr "/Applications/CYSC 任务栏.app"
+
+          3. 然后正常双击打开即可
+
+          如果还是被拦，去「系统设置 → 隐私与安全性」，
+          在底部找到关于 CYSC 的提示，点「仍要打开」。
+
+          【需要什么】
+          macOS 11 (Big Sur) 或更高。
+          Intel 与 Apple Silicon 都支持。
+
+          【已知差异（与 Windows 版相比）】
+          * 标题栏的最小化/最大化/关闭按钮是 Windows 风格（右上角），
+            功能正常但和 macOS 习惯（左上角红黄绿）不一致
+          * 菜单栏的托盘图标是彩色对勾，不是 macOS 常用的单色模板图
+          EOF
+          ls -lh build/ci/package/
+
+      - name: 上传 macOS 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CYSC-macOS
+          # 只要交付用的两个，不要把日志也塞进来
+          path: |
+            build/ci/package/CYSC.dmg
+            build/ci/package/请先读我-macOS.txt
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------- 发布
+  # 打 tag（v*）时把两个平台的产物挂到 Release 上，方便直接把链接发出去。
+  release:
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载两个平台的产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # ⚠ 这一步是有教训的，不要简化成 artifacts/**/* ——
+      #
+      # 第一次打 tag 时 Release 里出现了这些东西：
+      #   CYSC.-.exe              安装程序（中文名"CYSC任务管理-安装程序.exe"被
+      #                           GitHub 清理成乱码名，用户根本认不出）
+      #   -macOS.txt              "请先读我-macOS.txt" 同样被清掉中文
+      #   build.log / configure.log / ctest.log
+      #                           **给排查用的构建日志被当成交付物发布了**
+      #
+      # 所以这里显式挑出真正的交付物，并统一改成 ASCII 名：
+      # Release 的下载页面对非 ASCII 文件名不友好，而安装程序本身
+      # 在安装后显示的中文名（"CYSC 任务栏"）不受影响。
+      - name: 挑选交付物并改成 ASCII 名
+        run: |
+          mkdir -p release
+          cp "artifacts/CYSC-Windows/CYSC任务管理-安装程序.exe" release/CYSC-Setup-win64.exe
+          cp "artifacts/CYSC-Windows/CYSC-portable.zip"           release/CYSC-Portable-win64.zip
+          cp "artifacts/CYSC-macOS/CYSC.dmg"                      release/CYSC-macOS.dmg
+          cp "artifacts/CYSC-macOS/请先读我-macOS.txt"             release/README-macOS.txt
+          echo "=== 将发布的文件 ==="
+          ls -lh release
+
+      - name: 创建 Release 并挂上产物
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CYSC 任务栏 ${{ github.ref_name }}
+          body: |
+            CYSC 任务栏 —— 跨平台桌面任务管理工具
+
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | Windows 10/11 x64 | `CYSC-Setup-win64.exe` | 双击安装，自带 Qt 与 VC++ 运行库 |
+            | Windows 便携版 | `CYSC-Portable-win64.zip` | 解压即用，不用安装 |
+            | macOS 11+ | `CYSC-macOS.dmg` | Intel 与 Apple Silicon 均可 |
+            | macOS 使用说明 | `README-macOS.txt` | **首次打开前请先看这个** |
+
+            **两个包都没有代码签名**，首次打开会被系统拦：
+
+            - Windows：SmartScreen 提示"未知发布者" → 点「更多信息」→「仍要运行」
+            - macOS：Apple Silicon 上会提示"已损坏" → 在终端执行一次
+              `xattr -cr "/Applications/CYSC 任务栏.app"`，然后正常打开
+
+            要消除这些提示需要购买代码签名证书 / Apple 开发者账号，学生项目一般不做。
+
+            > macOS 版能构建、能跑全部自检、能打出 dmg，但**未在真机人工验证过
+            > 运行行为**（尤其 `Qt::Tool` 的窗口表现）。如有异常请提 issue。
+          files: release/*

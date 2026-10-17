@@ -1,0 +1,11 @@
+// Windows 资源脚本：把应用图标嵌进 .exe。
+//
+// 为什么要这一步：CMake 不会自动给可执行文件加图标 —— 没有它，exe 在资源管理器
+// 和任务栏里显示的是系统默认图标。安装程序也需要这个 .ico 做快捷方式图标。
+//
+// 只在 Windows 上参与编译（见 CMakeLists.txt 里的 if(WIN32)）。
+// IDI_ICON1 = 1 是 Windows 约定的"主图标"ID。
+
+#include <windows.h>
+
+IDI_ICON1 ICON DISCARDABLE "app.ico"

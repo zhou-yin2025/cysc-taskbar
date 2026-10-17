@@ -1,0 +1,75 @@
+@echo off
+rem ============================================================
+rem  CYSC TaskBar - 常用命令速查（本文件不做事，只是把命令列出来）
+rem  日常只需要前两条；完整的构建/测试/打包说明看 README.md。
+rem ============================================================
+
+rem ---- 1. 编译（Debug / Release）----
+rem call scripts\build.bat Debug
+rem call scripts\build.bat Release
+
+rem ---- 2. 编译 + 跑全部测试（3 个 CTest 用例）----
+rem call scripts\test.bat Debug
+rem call scripts\test.bat Release
+
+rem ---- 3. 【重要】改过公共头文件之后必须干净重建 ----
+rem    改过 mainwindow.h / Task.h / src\models\*.h 之后，增量构建可能只重编
+rem    一部分 .cpp，导致 .obj 来自不同版本的源码（ABI 不一致）-> 随机闪退。
+rem    这两条就是"删掉构建目录 + 重新配置 + 完整编译"：
+rem call scripts\build.bat Debug clean
+rem call scripts\build.bat Debug
+
+rem ---- 4. 检查构建目录里有没有混批次的 .obj ----
+rem powershell -NoProfile -ExecutionPolicy Bypass -File tools\check_build_fresh.ps1 build\ninja-Debug
+
+rem ---- 5. 打 Windows 安装程序 + 便携版 zip ----
+rem    产物: build\package\CYSC任务管理-安装程序.exe
+rem          build\package\CYSC-portable.zip
+rem    前置: 先跑 scripts\build.bat Release
+rem          Inno Setup 6 (winget install JRSoftware.InnoSetup)
+rem call scripts\package.bat
+
+rem ---- 6. 手工运行程序（需要 Qt 的 DLL 在 PATH 中）----
+rem set "PATH=D:\Qt\6.11.0\msvc2022_64\bin;%PATH%"
+rem set "QT_PLUGIN_PATH=D:\Qt\6.11.0\msvc2022_64\plugins"
+rem build\ninja-Release\CYSC任务管理.exe
+
+rem ---- 7. 手工配置 + 编译（等价于 build.bat 内部做的事）----
+rem call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
+rem set "PATH=D:\Qt\6.11.0\msvc2022_64\bin;%PATH%"
+rem "D:\Qt\Tools\CMake_64\bin\cmake.exe" -S . -B build\ninja-Debug -G Ninja ^
+rem     -DCMAKE_BUILD_TYPE=Debug ^
+rem     -DCMAKE_PREFIX_PATH=D:/Qt/6.11.0/msvc2022_64 ^
+rem     -DCMAKE_MAKE_PROGRAM=D:/Qt/Tools/Ninja/ninja.exe ^
+rem     -DCYSC_BUILD_TESTS=ON
+rem "D:\Qt\Tools\CMake_64\bin\cmake.exe" --build build\ninja-Debug --parallel
+
+rem ---- 8. 应用内自检（退出码 0 表示通过）----
+rem set "QT_PLUGIN_PATH=D:\Qt\6.11.0\msvc2022_64\plugins"
+rem build\ninja-Debug\CYSC任务管理.exe --selftest      (单元逻辑 590 项)
+rem build\ninja-Debug\CYSC任务管理.exe --dsdemo        (数据结构演示 38 项)
+rem set "CYSC_TEST_TMPDIR=%CD%\build\ninja-Debug\cysc_test_tmp"
+rem build\ninja-Debug\CYSC任务管理.exe --guitest       (界面自检 346 项)
+
+rem ---- 9. 指定数据库位置（覆盖 StoragePaths 的自动探测）----
+rem set "CYSC_DB_PATH=D:\somewhere\cysc.db"
+rem build\ninja-Debug\CYSC任务管理.exe
+
+rem ---- 10. 人工检查用的启动参数 ----
+rem   --theme sky|sunset|rose    指定主题启动
+rem   --wizard                   启动就打开逐栏向导
+rem   --expand-first             启动就展开第一条任务
+rem   --visualize                启动就打开数据结构可视化面板
+rem   --visualize-tab N          同上，并切到第 N 个页签
+rem   --color-dialog             启动就打开配色对话框
+rem   --force-tray               强制假定托盘可用（验证"关窗收进托盘"）
+
+echo CYSC TaskBar - 常用命令速查
+echo.
+echo   scripts\build.bat Debug      编译
+echo   scripts\test.bat  Debug      编译 + 跑测试
+echo   scripts\package.bat          打安装程序 + 便携版
+echo.
+echo 详细说明见 README.md（本文件里被 rem 注释掉的是可复制粘贴的完整命令）
+echo.
+pause

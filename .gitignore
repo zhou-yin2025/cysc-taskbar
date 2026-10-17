@@ -1,0 +1,59 @@
+# Build output
+build/
+out/
+*.user
+
+# Compiled artefacts
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.idb
+
+# Qt Creator / clangd
+.qtc_clangd/
+.cache/
+compile_commands.json
+
+# Local databases and scratch data
+# 本地跑的库、测试用的临时库都不进仓库。
+*.db
+*.db-journal
+data/
+cysc_test_tmp/
+cysc_test_*.db
+cysc_selftest_*.db
+.cysc_write_probe
+
+# 但验收版的示例数据要带上 —— 别人克隆下来就能直接看到界面效果，
+# 不用先自己录数据。见 验收版/请先读我.txt。
+# 注意：git 对"被忽略的目录"不会去看里面的 ! 规则，所以必须先把目录放行。
+!验收版/data/
+!验收版/data/cysc.db
+
+# 打包用的第三方二进制不进仓库，需要时按 docs/打包说明.md 自己下
+resources/redist/vc_redist.x64.exe
+
+app.iconset/
+
+# 内部材料（课程相关：分工、PPT 大纲、实验报告大纲、验收清单、课程版 CHANGELOG）
+# 不进公开仓库，答辩时本地仍可用
+_internal/
+验收版/
+
+# 截图脚本用的示例数据库要进仓库（*.db 默认被忽略，这里单独放行）
+!tools/sample/cysc.db
+
+*.zip
+*.tar.gz
+
+# Editors / OS
+.vs/
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini

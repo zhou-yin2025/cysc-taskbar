@@ -1,0 +1,46 @@
+# ============================================================================
+#  .gitattributes  —— 把换行符处理钉死
+#
+#  为什么要这个文件：Git for Windows 默认 core.autocrlf=true，会在
+#  checkout 时把 LF 换成 CRLF、commit 时再换回来。这个项目有两条硬性要求，
+#  靠"默认行为"不可靠（换台机器、换个人 clone 就可能变）：
+#
+#    1. Windows 批处理 / 资源脚本必须是 CRLF
+#       cmd.exe 解析 .bat 时对换行敏感（我们在 LF + 非 ASCII 上踩过坑）。
+#    2. 源码与文档统一 LF
+#       保证在 Linux/macOS 与 CI 上 checkout 出来的内容一致，diff 也干净。
+#
+#  `text=auto` 让 Git 按内容判断是不是文本；
+#  显式指定 eol 的规则优先于它。
+# ============================================================================
+
+# ---- 默认：按内容自动判断，文本文件统一用 LF 入库 ----
+* text=auto eol=lf
+
+# ---- Windows 专用文件必须 CRLF ----
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.rc    text eol=crlf
+
+# PowerShell 脚本与 Inno Setup 脚本：LF 即可（两者都能正确处理），
+# 但为了和其它文本一致，明确写出来。
+*.ps1   text eol=lf
+*.iss   text eol=lf
+
+# ---- 二进制：不要动 ----
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.db    binary
+*.exe   binary
+*.dll   binary
+*.lib   binary
+*.pdb   binary
+*.obj   binary
+*.zip   binary
+
+# ---- 让 GitHub 的语言统计认出来 ----
+*.cpp   linguist-language=C++
+*.h     linguist-language=C++
