@@ -32,7 +32,7 @@ rem call scripts\package.bat
 rem ---- 6. 手工运行程序（需要 Qt 的 DLL 在 PATH 中）----
 rem set "PATH=D:\Qt\6.11.0\msvc2022_64\bin;%PATH%"
 rem set "QT_PLUGIN_PATH=D:\Qt\6.11.0\msvc2022_64\plugins"
-rem build\ninja-Release\CYSC任务管理.exe
+rem build\ninja-Release\cysc-taskbar.exe
 
 rem ---- 7. 手工配置 + 编译（等价于 build.bat 内部做的事）----
 rem call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
@@ -46,14 +46,14 @@ rem "D:\Qt\Tools\CMake_64\bin\cmake.exe" --build build\ninja-Debug --parallel
 
 rem ---- 8. 应用内自检（退出码 0 表示通过）----
 rem set "QT_PLUGIN_PATH=D:\Qt\6.11.0\msvc2022_64\plugins"
-rem build\ninja-Debug\CYSC任务管理.exe --selftest      (单元逻辑 590 项)
-rem build\ninja-Debug\CYSC任务管理.exe --dsdemo        (数据结构演示 38 项)
+rem build\ninja-Debug\cysc-taskbar.exe --selftest      (应用内自检 24 项)
+rem build\ninja-Debug\cysc-taskbar.exe --dsdemo        (数据结构演示 38 项)
 rem set "CYSC_TEST_TMPDIR=%CD%\build\ninja-Debug\cysc_test_tmp"
-rem build\ninja-Debug\CYSC任务管理.exe --guitest       (界面自检 346 项)
+rem build\ninja-Debug\cysc-taskbar.exe --guitest       (界面自检 346 项)
 
 rem ---- 9. 指定数据库位置（覆盖 StoragePaths 的自动探测）----
 rem set "CYSC_DB_PATH=D:\somewhere\cysc.db"
-rem build\ninja-Debug\CYSC任务管理.exe
+rem build\ninja-Debug\cysc-taskbar.exe
 
 rem ---- 10. 人工检查用的启动参数 ----
 rem   --theme sky|sunset|rose    指定主题启动
