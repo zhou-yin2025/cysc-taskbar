@@ -1,4 +1,4 @@
-# 抓取 CYSC 任务管理的各屏截图，存到 docs/shots/
+﻿# 抓取 CYSC 任务管理的各屏截图，存到 docs/shots/
 # 用法：powershell -File tools/archive_shots.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
