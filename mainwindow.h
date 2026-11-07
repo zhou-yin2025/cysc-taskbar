@@ -4,6 +4,9 @@
 #include <functional>
 #include <QWidget>
 #include <QListWidget>
+#include <QDropEvent>
+#include <QFile>
+#include <QTextStream>
 #include <QMimeData>
 #include <QLineEdit>
 #include <QPushButton>
@@ -43,13 +46,71 @@ public:
     }
 
 signals:
-    // 行已经被移到新位置后发出。
-    void rowMoved();
+    // 有任务被放下：targetRow 是「把被拖项拿掉之后」的下标。
+    void rowDropped(int taskId, int targetRow);
+
+protected:
+public:
+    // 自检入口：按给定落点执行一次「放下」，返回是否真的发出了移动请求。
+    // Qt 的拖放事件（QDrag/Drop）在离屏平台下没法可靠地合成，所以把落点
+    // 计算单独暴露出来测 —— 逻辑与真实 dropEvent 完全同一条路径。
+    bool testDropAt(const QPoint &viewportPos, int taskId) {
+        return performDrop(viewportPos, taskId);
+    }
 
 protected:
     void dropEvent(QDropEvent *event) override {
-        QListWidget::dropEvent(event);
-        emit rowMoved();
+        // 不再调用基类的 dropEvent：它做的是「内部移动」，但我们给拖拽加了
+        // 自定义 MIME 类型（侧栏要靠它认任务），Qt 于是按外部数据来处理，
+        // item 实际并没有被移动 —— 表现就是「有拖影、松手却没写回」。
+        if (!event->mimeData()->hasFormat(TaskMime::kTaskId)) {
+            event->ignore();
+            return;
+        }
+        bool ok = false;
+        const int draggedId =
+            QString::fromUtf8(event->mimeData()->data(TaskMime::kTaskId)).toInt(&ok);
+        if (!ok || draggedId < 0) {
+            event->ignore();
+            return;
+        }
+        if (!performDrop(event->position().toPoint(), draggedId)) {
+            event->ignore();
+            return;
+        }
+        event->setDropAction(Qt::MoveAction);
+        event->accept();
+    }
+
+private:
+    // 算出落点并发出 rowDropped；返回 false 表示"原地放下/无效"，无需处理。
+    bool performDrop(const QPoint &viewportPos, int draggedId) {
+        int from = -1;
+        for (int i = 0; i < count(); ++i) {
+            if (item(i)->data(Qt::UserRole).toInt() == draggedId) {
+                from = i;
+                break;
+            }
+        }
+        if (from < 0) return false;
+
+        // 落点：光标下那一条；落在条目下半部分就是插到它后面；
+        // 落在空白处则是追加到末尾。
+        int targetRow = count();
+        if (const QModelIndex idx = indexAt(viewportPos); idx.isValid()) {
+            targetRow = idx.row();
+            if (dropIndicatorPosition() == QAbstractItemView::BelowItem) ++targetRow;
+        }
+
+        // moveTask 的 to 是「移除之后」的下标，所以往前挪一格。
+        int to = targetRow;
+        if (to > from) --to;
+        if (to < 0) to = 0;
+        if (to > count() - 1) to = count() - 1;
+        if (to == from) return false;
+
+        emit rowDropped(draggedId, to);
+        return true;
     }
 
     // 拖拽时把被拖任务 id 一并以自有 MIME 类型放进去 —— 侧栏靠它认人。
@@ -183,8 +244,8 @@ private slots:
     void onItemClicked(QListWidgetItem *item);
     void onItemDoubleClicked(QListWidgetItem *item);
     void onItemContextMenu(const QPoint &pos);
-    // 拖拽结束后由 TaskListWidget::rowMoved 触发：把新顺序写回模型。
-    void onRowsMoved();
+    // 拖拽结束后由 TaskListWidget::rowDropped 触发：把新顺序写回模型。
+    void onRowDropped(int draggedId, int targetPos);
     void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
     void onQuit();
     void onReminderTick();
