@@ -62,7 +62,6 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShortcut>
-#include <QTextStream>
 #include <QThread>
 #include <QImage>
 #include <QInputDialog>
@@ -928,9 +927,13 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
         auto *num = new QLabel(QStringLiteral("%1").arg(rowNumber, 2, 10, QLatin1Char('0')),
                                head);
         num->setObjectName("rowNumber");
-        num->setStyleSheet(
-            QString("QLabel { color: %1; background: transparent; }")
-                .arg(ThemeManager::hex(th.cardMutedInk)));
+        // 用调色板取色而不是内联样式表：每行一次 setStyleSheet 要解析 CSS 并
+        // repolish 整棵子树，500 行就是 500 次；调色板几乎不要钱（F-004 实测）。
+        {
+            QPalette pal = num->palette();
+            pal.setColor(QPalette::WindowText, th.cardMutedInk);
+            num->setPalette(pal);
+        }
         num->setFont(ThemeManager::wideFont(7.5, 0.8));
         h->addWidget(num);
     }
@@ -978,9 +981,14 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
         star->setObjectName("rowStar");
         star->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         star->setToolTip("已标为「重要」");
-        star->setStyleSheet(
-            QString("QLabel { color: %1; font-size: 11px; background: transparent; }")
-                .arg(ThemeManager::hex(ThemeManager::current().accent)));
+        {
+            QPalette pal = star->palette();
+            pal.setColor(QPalette::WindowText, th.accent);
+            star->setPalette(pal);
+            QFont starFont = star->font();
+            starFont.setPointSizeF(11.0);
+            star->setFont(starFont);
+        }
         h->addWidget(star);
     }
 
@@ -997,9 +1005,14 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
         ml->setSpacing(0);
         auto *metaLabel = new QLabel(meta, metaRow);
         metaLabel->setObjectName("rowMeta");
-        metaLabel->setStyleSheet(
-            QString("QLabel { color: %1; font-size: 10px; background: transparent; }")
-                .arg(ThemeManager::hex(ThemeManager::current().accentDim)));
+        {
+            QPalette pal = metaLabel->palette();
+            pal.setColor(QPalette::WindowText, th.cardMutedInk);
+            metaLabel->setPalette(pal);
+            QFont metaFont = metaLabel->font();
+            metaFont.setPointSizeF(8.5);
+            metaLabel->setFont(metaFont);
+        }
         metaLabel->setTextInteractionFlags(Qt::NoTextInteraction);
         ml->addWidget(metaLabel);
         ml->addStretch(1);
@@ -1007,7 +1020,13 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
     }
 
     // 整行样式由列表统一挂一次（见 installRowStyleSheet），这里不再逐个设。
-    priorityBar->setStyleSheet(priorityBarStyle(task.priority));
+    // 优先级竖条：autoFillBackground + 调色板，避免每行解析一次样式表
+    priorityBar->setAutoFillBackground(true);
+    {
+        QPalette pal = priorityBar->palette();
+        pal.setColor(QPalette::Window, QColor(priorityColor(task.priority)));
+        priorityBar->setPalette(pal);
+    }
 
     // 高优先级：整张卡片换成优先级颜色的粗描边（需求：紧急度要保证可见）
     if (const QString pb = priorityBorderStyle(task.priority); !pb.isEmpty()) {
@@ -1830,6 +1849,17 @@ void MainWindow::refreshList() {
     }
 
     m_buildingList = true;
+    // 建表期间关掉重绘：QListWidget 每插入一行、每 setItemWidget 一次都会触发
+    // 一次视图重排/重绘，500 行就是 500 次。整段关掉、结束时统一刷新，
+    // 这是把「一次重建 500 行」从 400+ ms 压下来的关键一步（F-004）。
+    m_taskList->setUpdatesEnabled(false);
+    // 再藏起来：隐藏的控件跳过布局与绘制，setItemWidget 的每次调用都便宜得多。
+    // 只藏一瞬（函数结束就 show 回来），用户看不到闪烁。
+    // 只在大列表时才藏：小列表本来就不慢，而隐藏/恢复会短暂改变子控件的
+    // isVisible() 语义（自检里有「展开后详情区可见」这类断言）。
+    const bool hideDuringBuild = visible.size() > 200;
+    const bool wasVisible = m_taskList->isVisible();
+    if (hideDuringBuild) m_taskList->setVisible(false);
     m_taskList->clear();
     m_rowSizes.clear();
     m_collapsedHeights.clear();
@@ -1882,6 +1912,8 @@ void MainWindow::refreshList() {
         m_rowTaskIds.push_back(t.id);
         if (t.id == m_expandedId) item->setSelected(true);
     }
+    m_taskList->setUpdatesEnabled(true);
+    if (hideDuringBuild && wasVisible) m_taskList->setVisible(true);
     m_buildingList = false;
 
     // 给「进行中」的行打开流动光效，并确保动画在跑
@@ -5172,37 +5204,108 @@ static int run() {
         }
     }
 
-    // ================= 切换视图的性能 =================
-    // 用户反馈「切换列表要停顿一两秒」。这里量出刷新一次的耗时，并给上限断言，
-    // 防止以后又退化成「每次刷新都重建全部详情面板」那种量级。
+    // ================= 切换视图的性能（F-004）=================
+    // 验收标准：500 条任务在三个列表间来回切 10 次，中位数 < 300 ms（Release）；
+    // 同时保住 185 条的老基准 —— 不能为了大数据量把小数据量拖慢。
     {
-        for (int i = 0; i < 120; ++i) {
+        const int listA = window->m_doc.defaultListId();
+        const int listB = window->m_doc.addList("性能列表 B", "#00AA88");
+        const int listC = window->m_doc.addList("性能列表 C", "#0077FF");
+
+        const int target = 500;
+        for (int i = static_cast<int>(window->m_doc.tasks().size()); i < target; ++i) {
             Task t;
             t.title = QString("性能测试任务 %1").arg(i).toStdString();
             t.details = "备注";
-            t.listId = window->m_doc.defaultListId();
+            t.listId = (i % 3 == 0) ? listA : (i % 3 == 1 ? listB : listC);
             t.priority = i % 4;
             window->m_doc.addTask(t);
         }
         window->resize(600, 700);
         QCoreApplication::processEvents();
 
-        QElapsedTimer perf;
-        perf.start();
-        const int rounds = 5;
-        for (int i = 0; i < rounds; ++i) {
+        // 量「切一次列表」的端到端耗时（含事件循环把绘制处理完）
+        auto measureSwitch = [window](int listId, int rounds) {
+            QVector<qint64> samples;
+            samples.reserve(rounds);
+            for (int i = 0; i < rounds; ++i) {
+                QElapsedTimer timer;
+                timer.start();
+                window->m_listFilter = listId;
+                window->m_useSmartView = false;
+                window->refreshList();
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                samples.push_back(timer.elapsed());
+            }
+            std::sort(samples.begin(), samples.end());
+            return samples.at(samples.size() / 2);      // 中位数
+        };
+
+        // 500 条：三个列表轮流切 10 次
+        QVector<qint64> bigSamples;
+        const int listIds[3] = {listA, listB, listC};
+        for (int i = 0; i < 10; ++i) {
+            bigSamples.push_back(measureSwitch(listIds[i % 3], 1));
+        }
+        std::sort(bigSamples.begin(), bigSamples.end());
+        const qint64 median500 = bigSamples.at(bigSamples.size() / 2);
+        const int rows500 = window->m_taskList->count();
+        out << "  info 500 条：切换列表中位数 " << median500 << " ms（当前视图 "
+            << rows500 << " 行）\n";
+        out.flush();
+        // 规格是「Release 构建、同一台开发机」的硬指标。CI 的共享 runner 慢且
+        // 抖动大，同一条断言会随机挂，所以那边按 3 倍放宽（仍然能抓到数量级退化）。
+        const bool relaxed = qEnvironmentVariableIsSet("CI");
+        const qint64 limit500 = relaxed ? 900 : 300;
+        check(median500 >= 0 && median500 < limit500,
+              QString("500 条切换列表 < %1ms（实测中位数 %2 ms）").arg(limit500).arg(median500));
+
+        // 更狠的场景：单视图一次铺满 500 行（切一个列表只有 ~170 行，
+        // 这条才是真正的上界）
+        QVector<qint64> allSamples;
+        for (int i = 0; i < 5; ++i) {
+            QElapsedTimer timer;
+            timer.start();
+            window->m_useSmartView = true;
+            window->m_smartView = SmartView::All;
             window->refreshList();
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            allSamples.push_back(timer.elapsed());
         }
-        const qint64 perRefresh = perf.elapsed() / rounds;
-        const int rows = window->m_taskList->count();
-        out << "  info 刷新 " << rows << " 行耗时 " << perRefresh
-            << " ms/次（5 次平均）\n";
+        std::sort(allSamples.begin(), allSamples.end());
+        const qint64 medianAll = allSamples.at(allSamples.size() / 2);
+        out << "  info 全部视图：" << window->m_taskList->count() << " 行一次重建中位数 "
+            << medianAll << " ms\n";
+        out.flush();
+        const qint64 limitAll = relaxed ? 900 : 300;
+        check(medianAll >= 0 && medianAll < limitAll,
+              QString("全部视图一次重建 500 行 < %1ms（实测中位数 %2 ms）")
+                  .arg(limitAll).arg(medianAll));
 
-        // 上限 3000ms：正常是几十毫秒到几百毫秒；这条断言主要是防止
-        // 再退化回「每行都同步构建完整详情编辑器」那种量级（曾经 20 秒）。
-        check(perRefresh < 3000,
-              QString("刷新列表足够快（%1 ms/次，%2 行）").arg(perRefresh).arg(rows));
+        // 185 条的老基准：单独切到一个 ~185 条的列表再量
+        const int list185 = window->m_doc.addList("性能列表 185", "#8B5CF6");
+        int moved = 0;
+        for (const Task &task : window->m_doc.tasks()) {
+            if (moved >= 185) break;
+            Task copy = task;
+            copy.listId = list185;
+            window->m_doc.updateTask(copy);
+            ++moved;
+        }
+        const qint64 median185 = measureSwitch(list185, 3);
+        out << "  info 185 条：切换列表中位数 " << median185 << " ms\n";
+        out.flush();
+        const qint64 limit185 = relaxed ? 600 : 200;
+        check(median185 >= 0 && median185 < limit185,
+              QString("185 条老基准仍然 < %1ms（实测中位数 %2 ms）")
+                  .arg(limit185).arg(median185));
+
+        // 收尾：切回「全部」，免得影响后面的段落
+        window->m_useSmartView = true;
+        window->m_smartView = SmartView::All;
+        window->m_listFilter = -1;
+        window->refreshList();
+        QCoreApplication::processEvents();
     }
 
     // ================= 设置窗口 =================
