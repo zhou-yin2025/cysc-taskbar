@@ -185,7 +185,6 @@ private slots:
     void onItemContextMenu(const QPoint &pos);
     // 拖拽结束后由 TaskListWidget::rowMoved 触发：把新顺序写回模型。
     void onRowsMoved();
-    void onClickTimerTimeout();
     void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
     void onQuit();
     void onReminderTick();
@@ -292,15 +291,10 @@ private:
     bool m_buildingList = false;
     // 单击/双击判定：第一次按下立即执行单击（跟手）；双击窗口内再按下同一条
     // => 双击，此时把展开状态还原成双击之前的样子，做到「双击只改状态」。
-    int m_pendingClickId = -1;
-    bool m_clickWindowOpen = false;
-    QTimer *m_clickTimer = nullptr;
-    int m_expandedBeforeDoubleClick = -1;
     // 延迟展开：按下时先不动，等确认「不是拖拽」再展开。
     //
     // 为什么：原来按下就立刻展开，于是想拖拽的用户会先看到详情弹开、
     // 拖动开始时又缩回去 —— 两下闪烁，很卡眼。
-    QTimer *m_expandDeferTimer = nullptr;
     int m_pendingExpandId = -1;
     // 按下时的位置与「是否已经判定为拖拽」，用来区分点击和拖拽。
     QPoint m_pressPos;
@@ -383,11 +377,6 @@ private:
     void ensureGlowRunning();
     // 就地展开/收起详情区：只改行高与可见性，不重建列表。
     void applyExpansion();
-    // 双击后把展开状态还原成双击之前的样子（双击不再改状态，等价于什么都不做）。
-    void restoreExpansionAfterDoubleClick() {
-        m_expandedId = m_expandedBeforeDoubleClick;
-        applyExpansion();
-    }
     void updateSortButton();
     // 落库并刷新列表（两个新建窗口共用）。
     void createTask(const Task& task);

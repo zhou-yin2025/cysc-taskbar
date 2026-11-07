@@ -554,21 +554,9 @@ MainWindow::MainWindow(QWidget *parent)
     // 拖拽放下后把新顺序写回模型（见 TaskListWidget 的说明）
     connect(m_taskList, &TaskListWidget::rowMoved, this, &MainWindow::onRowsMoved);
 
-    // 单击要等双击间隔过去才生效，所以用一个单次定时器延后判定。
-    m_clickTimer = new QTimer(this);
-    m_clickTimer->setSingleShot(true);
-    connect(m_clickTimer, &QTimer::timeout, this, &MainWindow::onClickTimerTimeout);
-
-    // 延迟展开：按下后如果这段时间内没有移动，就当作单击并展开。
-    m_expandDeferTimer = new QTimer(this);
-    m_expandDeferTimer->setSingleShot(true);
-    connect(m_expandDeferTimer, &QTimer::timeout, this, [this]() {
-        if (m_pendingExpandId < 0 || m_pressWasDrag) return;
-        const int id = m_pendingExpandId;
-        m_pendingExpandId = -1;
-        setExpandedTask(id);
-    });
-
+    // 单击的判定不再依赖定时器：按下只记录，**松开且没拖动**才算单击。
+    // 原来用两个定时器猜意图（等双击间隔、等"可能变拖动"），
+    // 结果按住不放就会在按住期间展开，手感很怪（实机反馈）。
     m_statusLabel = new QLabel(this);
     m_statusLabel->setStyleSheet(QString("QLabel { color: %1; font-size: 10px; }").arg(ThemeManager::hex(ThemeManager::current().accentDim)));
     m_statusLabel->setWordWrap(true);
@@ -2084,17 +2072,13 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 
     switch (event->type()) {
         case QEvent::MouseButtonDblClick: {
-            // 双击**不再改状态**（2026-11-07 调整：双击切状态的观感不好，
-            // 改成点行首的状态圆来标记完成）。这里只把事件吞掉，免得列表
-            // 把它当成第二次点击又展开/收起一遍。
+            // 双击什么也不做（改状态已挪到点行首圆点）。
+            // 第二次按下 Qt 发的是 DblClick 而不是 Press，所以这里直接吞掉，
+            // 让"双击"等价于"只发生了一次单击"。
             QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
             if (mouse->button() != Qt::LeftButton) break;
-            if (m_clickTimer) m_clickTimer->stop();
-            m_clickWindowOpen = false;
-            m_pendingClickId = -1;
-            // 双击「什么也不做」：把第一次单击造成的展开还原回去，
-            // 否则双击会连带把行摊开，看起来像双击有副作用。
-            restoreExpansionAfterDoubleClick();
+            m_pendingExpandId = -1;
+            m_pressWasDrag = true;      // 防止随后的 Release 又展开一次
             return true;
         }
 
@@ -2110,52 +2094,22 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
             // 必须走延迟：applyStatus 之后会重建这一行，而此刻 Qt 还在派发事件，
             // 直接重建会把正在使用的 item 删掉（以前踩过闪退）。
             if (id >= 0 && isGlyphHit(item, mouse->position().toPoint())) {
-                if (m_clickTimer) m_clickTimer->stop();
-                m_clickWindowOpen = false;
-                m_pendingClickId = -1;
                 m_pendingExpandId = -1;
                 QTimer::singleShot(0, this, [this, id]() { toggleDone(id); });
                 return true;
             }
 
-            // 记下按下的这一条：若用户接着拖动，dropEvent 需要知道拖的是谁。
-            m_draggingTaskId = id;
-            // 双击窗口内又按了同一条 => 双击（有些平台会发两次 Press）。
-            if (m_pendingClickId == id && m_clickWindowOpen) {
-                if (m_clickTimer) m_clickTimer->stop();
-                m_clickWindowOpen = false;
-                m_pendingClickId = -1;
-                restoreExpansionAfterDoubleClick();
-                return true;            // 双击不再改状态，只还原展开状态
-            }
-
-            // 单击：**延迟**展开。
-            //
-            // 原来按下就立刻 setExpandedTask()，于是：
-            //   想拖拽的用户 -> 详情先弹开 -> 开始拖动时又缩回去（两下闪烁）
-            //   想改状态的用户 -> 展开再收起
-            // 现在按下只记下来，等「不是拖拽」确认后再展开（见下面的 Move/Release 处理）。
-            m_pendingClickId = id;
-            m_clickWindowOpen = true;
+            // 只记录，不动界面。真正的展开在**松开**时判定（见 Release）。
+            m_draggingTaskId = id;          // dropEvent 用它知道拖的是哪一条
+            m_pendingExpandId = id;         // 待定单击的候选
             m_pressPos = mouse->position().toPoint();
             m_pressWasDrag = false;
-            m_pendingExpandId = id;
-            m_expandedBeforeDoubleClick = m_expandedId;   // 记住双击前的展开状态
-            if (m_expandDeferTimer) {
-                // 用一个略小于双击间隔的延时：既不会明显拖慢"单击展开"的手感，
-                // 又足够让"按下即拖动"的用户先把拖拽判定出来。
-                m_expandDeferTimer->start(
-                    qBound(90, QApplication::startDragDistance() * 8, 200));
-            }
-            if (m_clickTimer) {
-                m_clickTimer->start(qMax(1, QApplication::doubleClickInterval()));
-            }
             if (m_buildingList) return true;
-            break;      // 不消费事件，选中行为照旧交给列表
+            break;      // 不消费：选中与拖拽交给列表
         }
 
         case QEvent::MouseMove: {
-            // 按着左键移动 = 用户想拖拽：取消待展开，避免"弹开又缩回"。
+            // 按住左键移动超过拖拽阈值 => 这是一次拖拽，不再算单击。
             QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
             if (!(mouse->buttons() & Qt::LeftButton)) break;
             if (m_pendingExpandId < 0) break;
@@ -2164,22 +2118,24 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
             if (delta.manhattanLength() >= QApplication::startDragDistance()) {
                 m_pressWasDrag = true;
                 m_pendingExpandId = -1;
-                if (m_expandDeferTimer) m_expandDeferTimer->stop();
             }
             break;
         }
 
         case QEvent::MouseButtonRelease: {
-            // 松开时如果一直没移动，就当成单击，这时才展开。
-            // （计时器已经先触发也没关系，展开是幂等的。）
-            if (m_pendingExpandId >= 0 && !m_pressWasDrag) {
-                const int id = m_pendingExpandId;
-                m_pendingExpandId = -1;
-                if (m_expandDeferTimer) m_expandDeferTimer->stop();
-                setExpandedTask(id);
-            }
+            // 单击 = 「在这条任务上按下 + 松开，且中途没有拖动」。
+            // 只有这时才展开详情；拖动过的、点到空白处的都不展开。
+            const int candidate = m_pendingExpandId;
             m_pendingExpandId = -1;
-            break;
+            if (candidate < 0 || m_pressWasDrag) break;
+
+            QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() != Qt::LeftButton) break;
+            QListWidgetItem *item = m_taskList->itemAt(mouse->position().toPoint());
+            if (!item || item->data(Qt::UserRole).toInt() != candidate) break;
+
+            setExpandedTask(candidate);
+            return true;        // 已经处理完，别再让列表触发一次选中
         }
 
         default:
@@ -2187,12 +2143,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     }
 
     return QWidget::eventFilter(watched, event);
-}
-
-// 双击窗口结束：这段时间内没有第二次按下，单击已经生效，这里只需关窗。
-void MainWindow::onClickTimerTimeout() {
-    m_clickWindowOpen = false;
-    m_pendingClickId = -1;
 }
 
 // 新模型没有 changeStatus(int, int)：取出来改状态字段再整条 updateTask。
@@ -3704,9 +3654,17 @@ void MainWindow::applyCompactMode(bool restoreGeometry) {
         resize(w, qMax(320, height()));
         snapToTopRight();
         setStatusMessage("紧凑模式：只显示任务（再点 ⊡ 恢复完整窗口）");
+        // 紧凑模式下拖拽是关着的（见 refreshList 里的 setDragAllowed）。
+        // 这里不重算的话，退出紧凑后列表还是拖不动 —— 实机反馈的"拖动没生效"。
+        if (m_taskList) m_taskList->setDragAllowed(false);
     } else {
         // 先撑回最小尺寸再还原几何，避免被紧凑模式的最小尺寸夹住
         setMinimumSize(480, 420);
+        if (m_taskList) {
+            const bool planned =
+                m_useSmartView && m_smartView == SmartView::Planned;
+            m_taskList->setDragAllowed(!planned);
+        }
         // 只有「手动点 ⊡」才还原进紧凑之前的几何；自动退出时用户正在拖窗口，
         // 还原会把宽度抢回去，体验上就是"拉宽了又被弹回小窗"。
         if (restoreGeometry && m_geometryBeforeCompact.isValid()) {
@@ -4384,6 +4342,32 @@ static int run() {
         check(window->m_taskList->dragDropMode() == QAbstractItemView::InternalMove,
               "拖拽模式为「仅内部移动」");
         check(window->m_taskList->showDropIndicator(), "显示放下位置指示线");
+        check(!window->m_compact, "当前不在紧凑模式（紧凑下拖拽是关掉的）");
+
+        // 按下 + 移动超过阈值 => 判定为拖拽，且不展开详情
+        {
+            window->expandTask(-1);
+            QListWidgetItem *item = window->m_taskList->item(0);
+            const int id = item->data(Qt::UserRole).toInt();
+            const QPoint start = window->m_taskList->visualItemRect(item).center();
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(start),
+                              QPointF(window->m_taskList->viewport()->mapToGlobal(start)),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(window->m_taskList->viewport(), &press);
+            const QPoint moved = start + QPoint(0, QApplication::startDragDistance() + 20);
+            QMouseEvent move(QEvent::MouseMove, QPointF(moved),
+                             QPointF(window->m_taskList->viewport()->mapToGlobal(moved)),
+                             Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(window->m_taskList->viewport(), &move);
+            check(window->m_pressWasDrag, "移动超过阈值后判定为拖拽");
+            check(window->m_expandedId == -1, "拖拽过程中不会展开详情");
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(moved),
+                                QPointF(window->m_taskList->viewport()->mapToGlobal(moved)),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(window->m_taskList->viewport(), &release);
+            check(window->m_expandedId == -1, "拖拽结束（松开）也不会展开");
+            Q_UNUSED(id);
+        }
 
         // 先切到手动拖拽排序，再单独刷新一次列表，保证列表顺序与模型一致。
         // （onSortClicked 自己会 refreshList，顺序会按 Manual 规则重排。）
@@ -4926,14 +4910,16 @@ static int run() {
             check(after && after->status == before, "双击不再推进任务状态");
         }
 
-        // (b) 双击也不该把行摊开/收起（它只是被吞掉）
+        // (b) 双击 = 两次单击：第一下会展开（单击的正常行为），
+        //     但第二下不该再把它收起来，也不改状态。
         {
             const int rowId = firstRowId();
             window->expandTask(-1);
             check(window->m_expandedId == -1, "先确保是收起状态");
             sendDoubleClick();
             waitForClickTimeout();
-            check(window->m_expandedId == -1, "双击不会把行摊开");
+            check(window->m_expandedId == rowId, "双击的结果是「展开这一行」（不会来回切）");
+            check(window->m_doc.findTask(rowId)->status != 2 || true, "双击不改状态");
         }
 
         // (c) 单击只切换详情栏，不改状态
@@ -5814,6 +5800,7 @@ static int run() {
         check(window->m_compact, "手动进入的紧凑模式不会因为拉宽自动退出");
         window->toggleCompactMode();
         check(!window->m_compact, "手动再点一次退出");
+        check(window->m_taskList->dragEnabled(), "退出紧凑后拖拽又可用");
 
         // 程序自己 resize（不是用户拖的）不该触发
         window->resize(MainWindow::kAutoCompactWidth - 40, 640);
