@@ -149,7 +149,7 @@ QString rowStyleSheet() {
     const Theme &th = ThemeManager::current();
     auto h = [](const QColor &c) { return ThemeManager::hex(c); };
 
-    return QString(
+    return ThemeManager::withRadius(QString(
         // 卡片：折叠 / 展开两种底
         "QWidget#taskRow { background-color: %1; border: 1px solid %2;"
         " border-radius: 5px; }"
@@ -181,22 +181,25 @@ QString rowStyleSheet() {
              h(th.cardMutedInk),               // 6
              h(th.statusAccent[1]),            // 7 备注标记用「进行中」的青绿
              h(th.panelBg))                    // 8
-        .arg(h(th.toolbarBg));                 // 9 输入框底
+        .arg(h(th.toolbarBg)));                // 9 输入框底
 }
 
 // 任务相关的小标签：没有子控件，内联样式表的重算代价可以忽略。
 QString stripeStyle(int status) {
-    return QString("background-color: %1; border-radius: 2px;").arg(statusAccentHex(status));
+    return ThemeManager::withRadius(
+        QString("background-color: %1; border-radius: 2px;").arg(statusAccentHex(status)));
 }
 QString dotStyleFor(int priority) {
-    return QString("background-color: %1; border-radius: 5px;").arg(priorityAccentHex(priority));
+    return ThemeManager::withRadius(
+        QString("background-color: %1; border-radius: 5px;").arg(priorityAccentHex(priority)));
 }
 // 优先级竖条：细长圆角，颜色与宽度都随等级变化。
 QString priorityBarStyle(int priority) {
     const int r = qBound(0, priority, 3);
-    return QString("background-color: %1; border-radius: %2px;")
-        .arg(priorityAccentHex(r))
-        .arg((2 + r) / 2);
+    return ThemeManager::withRadius(
+        QString("background-color: %1; border-radius: %2px;")
+            .arg(priorityAccentHex(r))
+            .arg((2 + r) / 2));
 }
 // 高优先级时整张卡片的描边也换成优先级颜色 —— 需求是"保证可见的明显边框"。
 // 中/低优先级不加，否则每张卡片都在喊，反而看不出重点。
@@ -206,9 +209,10 @@ QString priorityBorderStyle(int priority) {
         .arg(priorityAccentHex(priority));
 }
 QString statusChipStyle(int status) {
-    return QString("QLabel { color: %1; background-color: %2; border-radius: 3px;"
-                   " padding: 1px 5px; font-size: 9px; font-weight: bold; }")
-        .arg(statusChipInkHex(status), statusChipHex(status));
+    return ThemeManager::withRadius(
+        QString("QLabel { color: %1; background-color: %2; border-radius: 3px;"
+                " padding: 1px 5px; font-size: 9px; font-weight: bold; }")
+            .arg(statusChipInkHex(status), statusChipHex(status)));
 }
 } // namespace
 
@@ -873,7 +877,8 @@ QString MainWindow::priorityName(int priority) const {
     return kPriorityNames[0];
 }
 
-QWidget *MainWindow::createRowWidget(const Task& task) {
+QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
+    const Theme &th = ThemeManager::current();
     auto *container = new TaskRowWidget();
     const bool expanded = (task.id == m_expandedId);
     // 用两个固定的 objectName 区分折叠/展开，规则写进列表级样式表（只设一次）。
@@ -909,6 +914,19 @@ QWidget *MainWindow::createRowWidget(const Task& task) {
     priorityBar->setProperty("accent", priorityColor(task.priority));
     priorityBar->setToolTip(QString("优先级：%1").arg(priorityName(task.priority)));
     h->addWidget(priorityBar);
+
+    // 行编号（F-009 工业风）：01 02 …，等宽数字，浅色。
+    // 只在这套主题里出现，其余三款行内不占这一列。
+    if (th.rowNumbers) {
+        auto *num = new QLabel(QStringLiteral("%1").arg(rowNumber, 2, 10, QLatin1Char('0')),
+                               head);
+        num->setObjectName("rowNumber");
+        num->setStyleSheet(
+            QString("QLabel { color: %1; background: transparent; }")
+                .arg(ThemeManager::hex(th.cardMutedInk)));
+        num->setFont(ThemeManager::wideFont(7.5, 0.8));
+        h->addWidget(num);
+    }
 
     // 状态图形（空心圆 / 旋转光线 / 圆内打勾 / 暂停）
     auto *glyph = new StatusGlyph(head);
@@ -1336,14 +1354,15 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
             QString("#%1 ✕").arg(QString::fromStdString(tag)), tagBox);
         chip->setFixedHeight(18);
         chip->setStyleSheet(
-            QString("QPushButton { background-color: %1; color: %2; "
-                    "border: 1px solid %3; border-radius: 8px; padding: 0 6px; "
-                    "font-size: 9px; }"
-                    "QPushButton:hover { background-color: %4; }")
+            ThemeManager::withRadius(
+                QString("QPushButton { background-color: %1; color: %2; "
+                        "border: 1px solid %3; border-radius: 8px; padding: 0 6px; "
+                        "font-size: 9px; }"
+                        "QPushButton:hover { background-color: %4; }")
                 .arg(ThemeManager::hex(ThemeManager::current().cardBg),
                      ThemeManager::hex(ThemeManager::current().cardTitleInk),
                      ThemeManager::hex(ThemeManager::current().cardBorder),
-                     ThemeManager::hex(ThemeManager::current().danger.lighter(180))));
+                     ThemeManager::hex(ThemeManager::current().danger.lighter(180))))) ;
         chip->setToolTip("点击移除该标签");
         // 插在 stretch 之前
         tagLayout->insertWidget(tagLayout->count() - 1, chip);
@@ -1757,6 +1776,7 @@ void MainWindow::refreshList() {
     m_rowTaskIds.clear();
 
     const QDate todayForBuckets = QDate::currentDate();
+    int rowNumber = 0;      // 只在真正渲染出来的任务行上递增（分组头不算）
     PlannedBucket currentBucket = PlannedBucket::NoDate;
     bool haveBucket = false;
     // 每组多少条：分组头要显示「今天 · 3」
@@ -1788,7 +1808,7 @@ void MainWindow::refreshList() {
         QListWidgetItem *item = new QListWidgetItem(m_taskList);
         item->setData(Qt::UserRole, t.id);
 
-        QWidget *row = createRowWidget(t);
+        QWidget *row = createRowWidget(t, ++rowNumber);
         // 折叠高度：详情面板是懒创建的，此时只量标题行的高度。
         const int collapsed = qMax(row->sizeHint().height(), 24);
         m_collapsedHeights.insert(t.id, QSize(0, collapsed));
@@ -1864,6 +1884,10 @@ void MainWindow::appendBucketHeader(PlannedBucket bucket, int count) {
         host);
     btn->setObjectName("bucketHeader");
     btn->setFlat(true);
+    // 工业风的分组头是「宽体小字 + 字距」，正好用上 Saira
+    if (th.wideFont && ThemeManager::wideFontAvailable()) {
+        btn->setFont(ThemeManager::wideFont(8.0, 1.1));
+    }
     btn->setCursor(Qt::PointingHandCursor);
     btn->setStyleSheet(
         QString("QPushButton { color: %1; font-size: 10px; font-weight: bold;"
@@ -2089,7 +2113,9 @@ void MainWindow::refreshRow(int taskId) {
         QListWidgetItem *item = m_taskList->item(i);
         if (item->data(Qt::UserRole).toInt() != taskId) continue;
 
-        QWidget *row = createRowWidget(*task);
+        // 原地重建（展开/收起、刷新单行）不改编号，传 0 让它不显示序号之外的变化；
+        // 真正带编号的重建走 refreshList。
+        QWidget *row = createRowWidget(*task, 0);
         // 保持这一行原本的展开状态（展开的行需要把详情面板建出来）
         const bool expanded = (taskId == m_expandedId);
         row->setAttribute(Qt::WA_TransparentForMouseEvents, !expanded);
@@ -2578,10 +2604,11 @@ bool MainWindow::pickListColor(QString& colorInOut) {
         // 当前颜色加一圈白边，一眼看出现在用的是哪个
         const bool current = hex.compare(colorInOut, Qt::CaseInsensitive) == 0;
         sw->setStyleSheet(
-            QString("QPushButton { background-color: %1; border-radius: 5px;"
-                    " border: %2; }"
-                    "QPushButton:hover { border: 3px solid #FFFFFF; }")
-                .arg(hex, current ? "3px solid #FFFFFF" : "1px solid #55556A"));
+            ThemeManager::withRadius(
+                QString("QPushButton { background-color: %1; border-radius: 5px;"
+                        " border: %2; }"
+                        "QPushButton:hover { border: 3px solid #FFFFFF; }")
+                .arg(hex, current ? "3px solid #FFFFFF" : "1px solid #55556A")));
         sw->setToolTip(hex);
         grid->addWidget(sw, i / 4, i % 4);
         // 点一下即选中并关闭（少一次「确定」点击）
@@ -2597,8 +2624,9 @@ bool MainWindow::pickListColor(QString& colorInOut) {
     preview->setFixedHeight(30);
     preview->setAlignment(Qt::AlignCenter);
     preview->setStyleSheet(
-        QString("QLabel { background-color: %1; color: #FFFFFF; border-radius: 5px; "
-                "font-size: 11px; font-weight: bold; }").arg(picked));
+        ThemeManager::withRadius(
+            QString("QLabel { background-color: %1; color: #FFFFFF; border-radius: 5px; "
+                    "font-size: 11px; font-weight: bold; }").arg(picked)));
     preview->setText(picked);
     root->addWidget(preview);
 
@@ -2757,11 +2785,12 @@ void MainWindow::refreshSuggestions() {
         add->setCursor(Qt::PointingHandCursor);
         add->setToolTip("加入我的一天");
         add->setStyleSheet(
-                QString("QPushButton { background-color: transparent; color: %1; "
-                        "border: 1px solid %1; border-radius: 8px; padding: 0 6px; "
+                ThemeManager::withRadius(
+                    QString("QPushButton { background-color: transparent; color: %1; "
+                            "border: 1px solid %1; border-radius: 8px; padding: 0 6px; "
                         "font-size: 9px; }"
                         "QPushButton:hover { background-color: %1; color: %2; }")
-                    .arg(ThemeManager::hex(th.accent), ThemeManager::hex(th.onAccent)));
+                    .arg(ThemeManager::hex(th.accent), ThemeManager::hex(th.onAccent))));
         connect(add, &QPushButton::clicked, this,
                 [this, id]() { addSuggestionToMyDay(id); });
 
@@ -2929,6 +2958,33 @@ void MainWindow::paintEvent(QPaintEvent *event) {
     bg.setColorAt(0.0, th.windowTop);
     bg.setColorAt(1.0, th.windowBottom);
     painter.fillRect(rect(), bg);
+
+    // ---- 等高线底纹（F-009 工业风）----
+    // 只在主题要求时画；缓存按「尺寸 + 主题」失效，paintEvent 里只剩一次
+    // drawPixmap。直接用预渲染的 PNG 着色，产品不依赖 Qt Svg。
+    if (th.contour) {
+        if (m_contourCache.isNull() || m_contourCacheSize != size()
+            || m_contourCacheTheme != th.key) {
+            QImage source(QStringLiteral(":/contour.png"));
+            if (!source.isNull()) {
+                QImage tinted = source.scaled(size(), Qt::IgnoreAspectRatio,
+                                              Qt::SmoothTransformation);
+                // SourceIn：保留原图的 alpha（等高线的渐隐遮罩），把颜色换成墨色
+                QPainter tp(&tinted);
+                tp.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                tp.fillRect(tinted.rect(), th.cardTitleInk);
+                tp.end();
+                m_contourCache = QPixmap::fromImage(tinted);
+                m_contourCacheSize = size();
+                m_contourCacheTheme = th.key;
+            }
+        }
+        if (!m_contourCache.isNull()) {
+            painter.setOpacity(0.09);
+            painter.drawPixmap(0, 0, m_contourCache);
+            painter.setOpacity(1.0);
+        }
+    }
 
     // ---- 外边框：双层描边，内层淡一点做高光 ----
     painter.setPen(QPen(th.windowBorder, 1));
@@ -4955,8 +5011,15 @@ static int run() {
         const bool canScroll = bar->maximum() > bar->minimum();
         check(canScroll, "任务足够多时可以纵向滚动");
         if (canScroll) {
-            const int rowHeight = window->m_taskList->sizeHintForRow(0);
             const QPoint center = window->m_taskList->viewport()->rect().center();
+            // 实现是「按鼠标下那一行的高度滚」，F-003 之后行高不再统一
+            // （单行任务 38、有元信息的 56），所以这里也要取同一行的值，
+            // 拿第 0 行去比会误判。
+            QListWidgetItem *underItem = window->m_taskList->itemAt(center);
+            const int rowHeight = underItem
+                                      ? window->m_taskList->sizeHintForRow(
+                                            window->m_taskList->row(underItem))
+                                      : window->m_taskList->sizeHintForRow(0);
             QWheelEvent wheel(QPointF(center), QPointF(window->m_taskList->viewport()->mapToGlobal(center)),
                               QPoint(0, 0), QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
                               Qt::NoScrollPhase, false);
@@ -5146,12 +5209,25 @@ static int run() {
 
     // ================= 主题 =================
     {
-        check(ThemeManager::count() == 3, "注册了 3 款主题");
+        check(ThemeManager::count() == 4, "注册了 4 款主题");
         const Theme *all = ThemeManager::themes();
-        check(all[0].key == "sky" && all[1].key == "sunset" && all[2].key == "rose",
-              "三款主题的 key 正确");
-        check(!all[0].dark && all[1].dark && all[2].dark,
-              "晴空是浅色主题，晚霞与玫瑰是深色");
+        check(all[0].key == "sky" && all[1].key == "sunset" && all[2].key == "rose"
+                  && all[3].key == "endfield",
+              "四款主题的 key 正确");
+        check(!all[0].dark && all[1].dark && all[2].dark && !all[3].dark,
+              "晴空与谷地是浅色主题，晚霞与玫瑰是深色");
+
+        // 谷地（终末地工业风）：信号黄只做填充，线由墨色承担；全直角
+        const Theme &endfield = all[3];
+        check(endfield.signal.name() == QString("#fffa00"), "峰地的信号色是 #FFFA00");
+        check(endfield.accent.name() == QString("#161616"),
+              "谷地的 accent 是墨黑，不是信号黄（黄只能做填充）");
+        check(endfield.radius == 0, "谷地是全直角");
+        check(endfield.rowNumbers && endfield.contour && endfield.wideFont,
+              "谷地开了行编号、等高线底纹与宽体小字");
+        check(endfield.windowTop == endfield.windowBottom, "谷地是平面底，不用渐变");
+        check(all[0].radius > 0 && all[1].radius > 0 && all[2].radius > 0,
+              "其余三款仍然保留圆角");
 
         // 主题必须真的改变渲染结果，不能只是换了个枚举。
         //
@@ -5648,6 +5724,55 @@ static int run() {
         window->m_smartView = SmartView::All;
         window->refreshList();
         check(window->m_taskList->dragEnabled(), "回到全部视图又能拖了");
+    }
+
+    // ==================== 谷地主题：编号 / 直角 / 底纹（F-009）====================
+    {
+        const int before = ThemeManager::currentIndex();
+
+        // 宽体字体：资源编进 exe 了，Saira 必须可用
+        check(ThemeManager::wideFontAvailable(), "Saira 字体已随程序加载");
+        check(ThemeManager::wideFont(9.0).family() == QStringLiteral("Saira"),
+              "wideFont 取到的是 Saira");
+
+        // 切到谷地：行上出现 01/02 编号
+        check(ThemeManager::setCurrentByKey(QStringLiteral("endfield")), "能按 key 切到谷地");
+        window->applyThemeToWidgets();
+        window->refreshList();
+        QCoreApplication::processEvents();
+
+        auto firstRowNumbers = [window]() {
+            QStringList numbers;
+            for (int i = 0; i < window->m_taskList->count(); ++i) {
+                QWidget *row = window->m_taskList->itemWidget(window->m_taskList->item(i));
+                if (!row) continue;
+                for (QLabel *l : row->findChildren<QLabel*>()) {
+                    if (l->objectName() == "rowNumber") numbers << l->text();
+                }
+                if (!numbers.isEmpty()) break;
+            }
+            return numbers;
+        };
+        const QStringList endfieldNumbers = firstRowNumbers();
+        check(!endfieldNumbers.isEmpty(), "谷地主题下行首有编号");
+        check(!endfieldNumbers.isEmpty() && endfieldNumbers.first() == QStringLiteral("01"),
+              "第一条的编号是 01");
+
+        // 底纹：paintEvent 之后应该有缓存图
+        window->repaint();
+        QCoreApplication::processEvents();
+        check(!window->m_contourCache.isNull(), "谷地主题画出了等高线底纹");
+
+        // 切回晴空：编号消失、底纹缓存清空（key 变了，下次绘制会重建为空）
+        check(ThemeManager::setCurrentByKey(QStringLiteral("sky")), "能切回晴空");
+        window->applyThemeToWidgets();
+        window->refreshList();
+        QCoreApplication::processEvents();
+        check(firstRowNumbers().isEmpty(), "晴空主题下行首没有编号");
+
+        ThemeManager::setCurrentIndex(before);
+        window->applyThemeToWidgets();
+        window->refreshList();
     }
 
     // ==================== 两行式行布局 + 状态图形（F-003/F-002）====================

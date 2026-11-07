@@ -6,6 +6,7 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QApplication>
+#include <QFontDatabase>
 #include <QByteArray>
 #include <QFile>
 #include <QFont>
@@ -107,6 +108,10 @@ int main(int argc, char *argv[]) {
     //   Linux    -> Noto Sans SC
     // 漏掉 macOS 那一档的话，Mac 上会选到一个**不含中文字形**的西文字体，
     // 整个界面中文全变方块。
+    // F-009：宽体小字用的 Saira（只有拉丁字母，中文仍走系统字体 fallback）。
+    // 字体缺失时 addApplicationFont 返回 -1，界面照常工作，只是没有宽体效果。
+    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/Saira.ttf"));
+
     QFont baseFont = app.font();
     baseFont.setFamilies({"Microsoft YaHei UI", "Microsoft YaHei",
                           "PingFang SC", "Heiti SC",

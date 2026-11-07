@@ -324,6 +324,11 @@ private:
     QHash<int, QSize> m_collapsedHeights;
     // 行号 -> 任务 id（顺序与列表一致，方便按行取任务）。
     QVector<int> m_rowTaskIds;
+    // 等高线底纹缓存（F-009）：按窗口尺寸 + 主题缓存，paintEvent 只做一次
+    // drawPixmap；绝不逐帧重画 —— 那会和 F-004 的性能目标打架。
+    QPixmap m_contourCache;
+    QSize m_contourCacheSize;
+    QString m_contourCacheTheme;
     // 任务 id -> (列表项, 行控件)。展开/收起就地改，不重建列表，
     // 否则单击会把双击序列打断（第二次按下时 itemAt 已经找不到行）。
     QHash<int, QListWidgetItem*> m_rowItems;
@@ -394,7 +399,7 @@ private:
     void refreshRowKeepExpanded(int taskId);
     // 改状态：新模型没有 changeStatus，取出来改字段再 updateTask（自带快照）。
     bool applyStatus(int id, int status);
-    QWidget *createRowWidget(const Task& task);
+    QWidget *createRowWidget(const Task& task, int rowNumber);
     QWidget *createDetailEditor(const Task& task);
     // 详情面板是**按需创建**的，不是每行都建。
     //

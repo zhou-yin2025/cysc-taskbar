@@ -1,5 +1,7 @@
 #include "Theme.h"
 
+#include <QFontDatabase>
+#include <QRegularExpression>
 #include <QSettings>
 
 namespace {
@@ -187,7 +189,90 @@ Theme makeRose() {
     return t;
 }
 
-Theme g_themes[3] = {makeSky(), makeSunset(), makeRose()};
+// 第四款：谷地（信号黄·工业）—— 参考 hhikr/endfield-ui-skill 的 standard 预设。
+//
+// 这套风格的规矩和前三款不一样，映射时踩过两次坑，记在这里：
+//
+//   1) 底色是**中性灰白** #F4F4F2，不是米色（米色只出现在 site 预设里）
+//   2) 信号黄 #FFFA00 **只做填充**：原设计写明 "Fill only; never a line or text
+//      on light"。而我们 accent 的语义恰好是「描边/图标/状态栏文字」，
+//      所以 accent 映射成墨黑 #161616（原设计里"线和字"由墨承担），
+//      黄色单独放进 signal，只用于选中条与「进行中」的填充
+//   3) 全直角：radius = 0
+//   4) 背景是平面，不用渐变；底纹是等高线（不是斜线）
+Theme makeEndfield() {
+    Theme t;
+    t.key = "endfield";
+    t.name = "谷地（信号黄·工业）";
+    t.dark = false;
+
+    // 平面底：windowTop 与 windowBottom 取同一个值，等于关掉渐变
+    t.windowTop    = QColor("#F4F4F2");
+    t.windowBottom = QColor("#F4F4F2");
+    t.windowBorder = QColor("#161616");
+    t.titleBarLeft  = QColor("#F4F4F2");
+    t.titleBarRight = QColor("#E4E4E0");
+
+    // 线由墨色承担，黄色只做填充
+    t.accent    = QColor("#161616");
+    t.accentDim = QColor("#5C5C5C");
+    t.onAccent  = QColor("#FFFFFF");
+
+    t.signal    = QColor("#FFFA00");
+    t.onSignal  = QColor("#161616");
+    t.radius    = 0;
+    t.rowNumbers = true;
+    t.contour    = true;
+    t.wideFont   = true;
+
+    t.cardBg            = QColor("#FFFFFF");
+    t.cardBorder        = QColor("#D9D9D6");
+    t.cardBgExpanded    = QColor("#FFFFFF");
+    t.cardBorderExpanded = QColor("#161616");
+    t.cardTitleInk      = QColor("#161616");
+    t.cardMutedInk      = QColor("#5C5C5C");
+
+    t.sidebarBg    = QColor("#F4F4F2");
+    t.sidebarText  = QColor("#161616");
+    t.sidebarMuted = QColor("#5C5C5C");
+    t.sidebarHover = QColor("#E4E4E0");
+    t.sidebarActive = QColor("#FFFA00");
+
+    // 单一亮色原则：只有「进行中」用信号黄填充，其余靠墨色深浅区分
+    t.statusAccent[0] = QColor("#5C5C5C");   // 待办
+    t.statusAccent[1] = QColor("#FFFA00");   // 进行中（填充）
+    t.statusAccent[2] = QColor("#161616");   // 已完成
+    t.statusAccent[3] = QColor("#B26A00");   // 已暂停（琥珀）
+    t.statusChipBg[0] = QColor("#E4E4E0");
+    t.statusChipBg[1] = QColor("#FFFA00");
+    t.statusChipBg[2] = QColor("#161616");
+    t.statusChipBg[3] = QColor("#F2C14E");
+    t.statusChipInk[0] = QColor("#161616");
+    t.statusChipInk[1] = QColor("#161616");
+    t.statusChipInk[2] = QColor("#FFFFFF");
+    t.statusChipInk[3] = QColor("#161616");
+
+    // 优先级：灰阶递进，只有最紧急用危险色
+    t.priorityAccent[0] = QColor("#B8B8B4");
+    t.priorityAccent[1] = QColor("#5C5C5C");
+    t.priorityAccent[2] = QColor("#161616");
+    t.priorityAccent[3] = QColor("#B3261E");
+
+    // 分类已并入列表（F-006），这组只剩历史用途，给中性灰阶
+    t.categoryAccent[0] = QColor("#B8B8B4");
+    t.categoryAccent[1] = QColor("#5C5C5C");
+    t.categoryAccent[2] = QColor("#161616");
+    t.categoryAccent[3] = QColor("#B3261E");
+
+    t.danger  = QColor("#B3261E");
+    t.warn    = QColor("#B26A00");
+    t.toolbarBg = QColor("#FFFFFF");
+    t.panelBg   = QColor("#F4F4F2");
+    return t;
+}
+
+Theme g_themes[4] = {makeSky(), makeSunset(), makeRose(), makeEndfield()};
+
 int g_current = 0;
 
 const char *kSettingsKey = "view/theme";
@@ -197,12 +282,12 @@ const char *kSettingsKey = "view/theme";
 namespace ThemeManager {
 
 const Theme *themes() { return g_themes; }
-int count() { return 3; }
+int count() { return 4; }
 
 const Theme &current() { return g_themes[g_current]; }
 
 bool setCurrentByKey(const QString &key) {
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         if (g_themes[i].key == key) {
             g_current = i;
             return true;
@@ -212,7 +297,7 @@ bool setCurrentByKey(const QString &key) {
 }
 
 void setCurrentIndex(int index) {
-    if (index >= 0 && index < 3) g_current = index;
+    if (index >= 0 && index < 4) g_current = index;
 }
 
 int currentIndex() { return g_current; }
@@ -228,6 +313,40 @@ void saveToSettings() {
     QSettings s;
     s.setValue(QString::fromLatin1(kSettingsKey), current().key);
     s.sync();
+}
+
+
+bool wideFontAvailable() {
+    static const bool has = [] {
+        return QFontDatabase::families().contains(QStringLiteral("Saira"));
+    }();
+    return has;
+}
+
+QFont wideFont(qreal pointSize, qreal letterSpacing) {
+    QFont f;
+    if (wideFontAvailable()) f.setFamily(QStringLiteral("Saira"));
+    f.setPointSizeF(pointSize);
+    if (letterSpacing > 0.0) {
+        f.setLetterSpacing(QFont::AbsoluteSpacing, letterSpacing);
+    }
+    return f;
+}
+
+QString radiusCss() { return QString::number(current().radius); }
+
+QString withRadius(QString css) {
+    // 把样式表里所有 border-radius: <数字>px 换成当前主题的圆角。
+    //
+    // 为什么用"事后重写"而不是给每处样式表都插一个 %N 占位：
+    // 圆角散落在十几个样式表里、各自 .arg 数量不同，逐个插参数极易错位；
+    // 统一在字符串上改写一次，既不会漏，也不会碰坏已有的 .arg 链。
+    const QColor &c = current().cardBg;   // 只为取一次 current()，不用
+    Q_UNUSED(c);
+    static const QRegularExpression re(QStringLiteral("border-radius:\s*\d+px"));
+    const QString replacement = QStringLiteral("border-radius: %1px").arg(current().radius);
+    css.replace(re, replacement);
+    return css;
 }
 
 QString hex(const QColor &c) { return c.name(QColor::HexRgb); }

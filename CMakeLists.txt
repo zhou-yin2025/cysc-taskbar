@@ -98,6 +98,19 @@ endif()
 
 target_include_directories(cysc-taskbar PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# ---- 内嵌资源（F-009）----
+# 等高线底纹与 Saira 字体都编进 exe：产品只链接 Core/Widgets/Sql，
+# 不为了渲染一张 SVG 去加 Qt6::Svg；底纹是预先用一次性工具转好的 PNG。
+# BASE 把「resources/」这段前缀压掉，路径才是 :/contour.png、:/fonts/Saira.ttf；
+# 不写 BASE 的话会变成 :/resources/contour.png（运行时取不到，表现为底纹不显示、字体没注册）。
+qt_add_resources(cysc-taskbar "cysc_resources"
+    PREFIX "/"
+    BASE "resources"
+    FILES
+        resources/contour.png
+        resources/fonts/Saira.ttf
+)
+
 target_link_libraries(cysc-taskbar
     PRIVATE
         Qt::Core

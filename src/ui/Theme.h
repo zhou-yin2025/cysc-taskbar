@@ -8,6 +8,7 @@
 // ============================================================================
 
 #include <QColor>
+#include <QFont>
 #include <QString>
 
 // 一款主题的全部取色。
@@ -62,6 +63,17 @@ struct Theme {
     QColor priorityAccent[4];
     QColor categoryAccent[4];
 
+    // ---- 形状与排印（F-009「终末地工业风」需要）----
+    //
+    // signal 是「只做填充」的亮色：选中条、进行中的圆、"就是这里" 的底。
+    // 原设计明确写着 fill only，浅色主题下绝不能拿它画线或写字。
+    QColor signal;
+    QColor onSignal;        // 叠在 signal 上的前景色
+    int radius = 5;         // 全主题圆角半径（工业风是 0，一处都不圆）
+    bool rowNumbers = false;// 任务行左侧是否显示 01/02 编号
+    bool contour = false;   // 背景是否画等高线底纹
+    bool wideFont = false;  // 小标题/数字是否用宽体（Saira + 字距）
+
     // ---- 其他 ----
     QColor danger;          // 删除、错误提示
     QColor warn;            // 警告、逾期
@@ -71,7 +83,7 @@ struct Theme {
 
 namespace ThemeManager {
 
-// 三款主题的注册表（按顺序：晴空 / 晚霞 / 玫瑰）。
+// 四款主题的注册表（按顺序：晴空 / 晚霞 / 玫瑰 / 谷地）。
 const Theme *themes();
 int count();
 
@@ -90,6 +102,16 @@ void saveToSettings();
 
 // 便捷取色：直接拿 16 进制字符串，方便拼样式表。
 QString hex(const QColor &c);
+// 当前主题的圆角像素值（拼样式表用）。
+QString radiusCss();
+// 把一段 QSS 里的 @R@ 占位符换成当前主题的圆角：样式表里写
+// border-radius: @R@px，工业风自动变 0，其它主题保持原样。
+QString withRadius(QString css);
+// 宽体字体（Saira）是否可用；工业风的小字/数字会用它。
+bool wideFontAvailable();
+// 取一个宽体 QFont：pointSize 是磅值，letterSpacing 是额外字距（px）。
+// 字体不可用时退化成普通字体，不会出现方块。
+QFont wideFont(qreal pointSize, qreal letterSpacing = 0.0);
 
 } // namespace ThemeManager
 

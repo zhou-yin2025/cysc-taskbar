@@ -25,12 +25,13 @@ QString hexOf(const QColor &c) { return ThemeManager::hex(c); }
 QString rowStyle(bool active) {
     const Theme &th = ThemeManager::current();
     // 选中行的文字用强调色，未选中的用主题的侧栏文字色
-    return QString("QPushButton { text-align: left; padding: 5px 8px; border: none; "
-                   "border-radius: 5px; color: %1; font-size: 11px; background: %2; }"
-                   "QPushButton:hover { background: %3; }")
+    return ThemeManager::withRadius(
+        QString("QPushButton { text-align: left; padding: 5px 8px; border: none; "
+                "border-radius: 5px; color: %1; font-size: 11px; background: %2; }"
+                "QPushButton:hover { background: %3; }")
         .arg(active ? hexOf(th.accent) : hexOf(th.sidebarText),
              active ? hexOf(th.sidebarActive) : QString("transparent"),
-             hexOf(th.sidebarHover));
+             hexOf(th.sidebarHover)));
 }
 
 QString badgeStyle(bool active) {
@@ -441,8 +442,9 @@ bool TaskSidebar::eventFilter(QObject *watched, QEvent *event) {
             // 高亮一下当前落点，用户能看出会落到哪一行
             if (auto *w = qobject_cast<QWidget*>(watched)) {
                 w->setStyleSheet(
-                    QString("border: 1px dashed %1; border-radius: 3px;")
-                        .arg(ThemeManager::hex(ThemeManager::current().accent)));
+                    ThemeManager::withRadius(
+                        QString("border: 1px dashed %1; border-radius: 3px;")
+                        .arg(ThemeManager::hex(ThemeManager::current().accent))));
             }
             return true;
         }
