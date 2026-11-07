@@ -5521,6 +5521,19 @@ static int run() {
         check(all[0].radius > 0 && all[1].radius > 0 && all[2].radius > 0,
               "其余三款仍然保留圆角");
 
+        // withRadius 必须真的改写样式表。这条曾经因为正则里 \s/\d 被当成未知转义
+        // 而静默失效 —— 直角主题照样显示圆角，界面看起来"没生效"。
+        const int beforeRadius = ThemeManager::currentIndex();
+        ThemeManager::setCurrentByKey(QStringLiteral("endfield"));
+        check(ThemeManager::withRadius(QStringLiteral("border-radius: 5px;"))
+                  == QStringLiteral("border-radius: 0px;"),
+              "谷地主题把圆角改写成 0");
+        ThemeManager::setCurrentByKey(QStringLiteral("sky"));
+        check(ThemeManager::withRadius(QStringLiteral("border-radius: 5px;"))
+                  == QStringLiteral("border-radius: 5px;"),
+              "晴空主题保留原来的圆角值");
+        ThemeManager::setCurrentIndex(beforeRadius);
+
         // 主题必须真的改变渲染结果，不能只是换了个枚举。
         //
         // 注意：grab() 非常贵（Debug 下整窗重绘一次要几百毫秒），所以只抓两张

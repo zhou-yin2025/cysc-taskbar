@@ -341,9 +341,9 @@ QString withRadius(QString css) {
     // 为什么用"事后重写"而不是给每处样式表都插一个 %N 占位：
     // 圆角散落在十几个样式表里、各自 .arg 数量不同，逐个插参数极易错位；
     // 统一在字符串上改写一次，既不会漏，也不会碰坏已有的 .arg 链。
-    const QColor &c = current().cardBg;   // 只为取一次 current()，不用
-    Q_UNUSED(c);
-    static const QRegularExpression re(QStringLiteral("border-radius:\s*\d+px"));
+    // 用原始字符串字面量：正则里的 \s / \d 在普通字符串里会被当成未知转义，
+    // 编出来变成 s* / d+px —— 这条规则就永远匹配不上，表现是"直角主题照样有圆角"。
+    static const QRegularExpression re(QStringLiteral(R"(border-radius:\s*\d+px)"));
     const QString replacement = QStringLiteral("border-radius: %1px").arg(current().radius);
     css.replace(re, replacement);
     return css;
