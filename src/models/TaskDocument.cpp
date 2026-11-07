@@ -517,7 +517,6 @@ bool TaskDocument::matches(const Task& task, const TaskFilter& filter) {
 
     if (filter.hideDone && task.status == 2) return false;
 
-    if (filter.categoryId >= 0 && task.categoryId != filter.categoryId) return false;
 
     if (!filter.tag.empty()) {
         bool found = false;

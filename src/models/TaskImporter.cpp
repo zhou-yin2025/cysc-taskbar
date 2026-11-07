@@ -260,19 +260,6 @@ bool parsePriority(const std::string &raw, int &out) {
     return true;
 }
 
-bool parseCategory(const std::string &raw, int &out) {
-    const QString s = QString::fromStdString(raw).trimmed();
-    if (s.isEmpty()) return false;
-    if (s.contains(QString::fromUtf8("工作"))) { out = 1; return true; }
-    if (s.contains(QString::fromUtf8("学习"))) { out = 2; return true; }
-    if (s.contains(QString::fromUtf8("健康"))) { out = 3; return true; }
-    if (s.contains(QString::fromUtf8("其他")) || s.contains(QString::fromUtf8("其它"))) {
-        out = 0;
-        return true;
-    }
-    return false;
-}
-
 std::vector<std::string> splitTags(const std::string &raw) {
     std::vector<std::string> out;
     std::string cur;
@@ -482,16 +469,12 @@ ParseResult parse(const std::string &utf8Text) {
                                .toStdString());
             }
         } else if (key == "分类") {
-            int cat = 0;
-            if (parseCategory(valuePart.toStdString(), cat)) {
-                cur.categoryId = cat;
-            } else {
-                addWarning(cur,
-                           QString("第 %1 行分类无法识别：「%2」，按「其他」处理")
-                               .arg(lineNo)
-                               .arg(valuePart)
-                               .toStdString());
-            }
+            // F-006：分类已经并入列表 —— 旧写法「分类：学习」直接当成「列表：学习」。
+            cur.listName = valuePart.toStdString();
+            addWarning(cur, QString("第 %1 行用了「分类」，已按列表「%2」处理")
+                                .arg(lineNo)
+                                .arg(valuePart)
+                                .toStdString());
         } else if (key == "标签") {
             const std::vector<std::string> parsed = splitTags(valuePart.toStdString());
             for (const std::string &t : parsed) cur.tags.push_back(t);
@@ -666,7 +649,6 @@ ApplyStats applyTo(TaskDocument &doc, const std::vector<ImportTask> &tasks,
         task.details = src.details;
         task.priority = src.priority;
         task.deadline = src.deadline;
-        task.categoryId = src.categoryId;
         task.status = 0;
         task.listId = listId;
         task.tags = src.tags;

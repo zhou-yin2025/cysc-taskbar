@@ -228,16 +228,6 @@ Vector<Task> TaskModel::getTasksByDate(const std::string& date) {
     return result;
 }
 
-Vector<Task> TaskModel::getTasksByCategory(int categoryId) {
-    Vector<Task> result;
-    for (int i = 0; i < tasks.size(); ++i) {
-        if (tasks[i].categoryId == categoryId) {
-            result.pushBack(tasks[i]);
-        }
-    }
-    return result;
-}
-
 Vector<Task> TaskModel::query(const TaskQuery& q) const {
     const std::string needle = toLowerAscii(q.search);
     const bool useSearch = !needle.empty();
@@ -245,7 +235,6 @@ Vector<Task> TaskModel::query(const TaskQuery& q) const {
     Vector<Task> result;
     for (int i = 0; i < tasks.size(); ++i) {
         const Task& t = tasks[i];
-        if (q.categoryId >= 0 && t.categoryId != q.categoryId) continue;
         if (q.hideDone && t.status == 2) continue;
 
         // Substring scan across title and details: a prefix-only match would

@@ -24,7 +24,6 @@ struct ImportTask {
     // 提醒一律带时间（"yyyy-MM-dd HH:mm"）；空表示没有
     std::string reminder;
     int priority = 1;      // 0 低 / 1 中 / 2 高 / 3 紧急
-    int categoryId = 0;    // 0 其他 / 1 工作 / 2 学习 / 3 健康
     std::string listName;  // 空表示落到默认列表
     std::vector<std::string> tags;
 

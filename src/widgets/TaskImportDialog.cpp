@@ -37,16 +37,6 @@ QString priorityText(int priority) {
     }
 }
 
-QString categoryText(int categoryId) {
-    switch (categoryId) {
-        case 0: return "其他";
-        case 1: return "工作";
-        case 2: return "学习";
-        case 3: return "健康";
-        default: return "?";
-    }
-}
-
 } // namespace
 
 TaskImportDialog::TaskImportDialog(const TaskImporter::ParseResult &parsed,

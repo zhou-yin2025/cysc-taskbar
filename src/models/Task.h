@@ -46,7 +46,6 @@ struct Task {
     std::string details;       // 备注 / 任务详情，可为空
     int priority = 1;          // 0 low, 1 mid, 2 high, 3 urgent
     std::string deadline;      // "yyyy-MM-dd HH:mm"，空串表示无截止时间
-    int categoryId = 0;        // 0 其他, 1 工作, 2 学习, 3 健康
     int status = 0;            // 0 待办, 1 进行中, 2 已完成, 3 已暂停
     std::string createdAt;
     std::string completedAt;

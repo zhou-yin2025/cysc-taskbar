@@ -38,7 +38,6 @@ public:
     Task* findTask(int id);
     Vector<Task>& allTasks();
     Vector<Task> getTasksByDate(const std::string& date);
-    Vector<Task> getTasksByCategory(int categoryId);
 
     // Filtering + sorting in one pass (drives the list view).
     Vector<Task> query(const TaskQuery& q) const;

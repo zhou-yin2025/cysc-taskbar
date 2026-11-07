@@ -33,7 +33,6 @@ struct TaskFilter {
     int listId = -1;                    // >=0 时只看该列表
     SmartView smartView = SmartView::All;
     bool useSmartView = false;          // true 时忽略 listId
-    int categoryId = -1;                // >=0 时只看该分类（0 其他/1 工作/2 学习/3 健康）
     std::string tag;                    // 非空时只看带该标签的任务（走哈希索引）
     std::string search;                 // 非空时做全文子串过滤
     bool hideDone = false;

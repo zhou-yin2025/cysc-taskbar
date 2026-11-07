@@ -49,7 +49,6 @@ struct TaskQuery {
     // details. Deliberately not a prefix-only match: a user who half-remembers a
     // title must still find it.
     std::string search;
-    int categoryId = -1;          // -1 means "any category"
     bool hideDone = false;        // filter out status == 2
     SortScope scope = SortCreated;
     SortOrder order = OrderAsc;

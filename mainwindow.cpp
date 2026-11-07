@@ -133,15 +133,9 @@ QString priorityAccentHex(int priority) {
 }
 
 // 分类配色：同上。
-QString categoryAccentHex(int categoryId) {
-    const int i = (categoryId >= 0 && categoryId <= 3) ? categoryId : 0;
-    return ThemeManager::hex(ThemeManager::current().categoryAccent[i]);
-}
-
 // 优先级 / 分类的名称与配色。
 // 配色值不在这里存，而是通过下面的取色函数从主题表读 —— 保持单一来源。
 const char* kPriorityNames[4] = {"低", "中", "高", "紧急"};
-const char* kCategoryNames[4] = {"其他", "工作", "学习", "健康"};
 
 // 整行的样式表（挂在行的 container 上，靠 objectName 命中子控件）。
 //
@@ -216,12 +210,6 @@ QString statusChipStyle(int status) {
                    " padding: 1px 5px; font-size: 9px; font-weight: bold; }")
         .arg(statusChipInkHex(status), statusChipHex(status));
 }
-QString categoryChipStyle(int categoryId) {
-    return QString("QLabel { color: white; background-color: %1; border-radius: 3px;"
-                   " padding: 1px 5px; font-size: 9px; }")
-        .arg(categoryAccentHex(categoryId));
-}
-
 } // namespace
 
 namespace {
@@ -525,7 +513,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupTray();
     setupReminder();
-    updateCategoryRow();
     updateSortButton();
     refreshList();
 
@@ -708,19 +695,6 @@ void MainWindow::setupCategoryRow() {
     layout->addWidget(m_sortButton);
 }
 
-void MainWindow::updateCategoryRow() {
-    const Theme &th = ThemeManager::current();
-    for (int i = 0; i < 5; ++i) {
-        QPushButton *btn = m_categoryButtons[i];
-        if (!btn) continue;
-        if (i == 0) {
-            btn->setStyleSheet(chipStyle(ThemeManager::hex(th.accent), m_categoryFilter == CategoryAll));
-        } else {
-            btn->setStyleSheet(chipStyle(categoryAccentHex(i - 1), m_categoryFilter == (i - 1)));
-        }
-    }
-}
-
 void MainWindow::updateSortButton() {
     const Theme &th = ThemeManager::current();
     if (!m_sortButton) return;
@@ -744,7 +718,6 @@ void MainWindow::updateSortButton() {
 TaskFilter MainWindow::buildQuery() const {
     TaskFilter filter;
     filter.search = m_search ? m_search->text().trimmed().toStdString() : std::string();
-    filter.categoryId = m_categoryFilter;      // -1 = 不按分类过滤
     // 左侧栏的选择：智能视图优先，否则看某个列表。
     filter.useSmartView = m_useSmartView;
     filter.smartView = m_smartView;
@@ -767,16 +740,6 @@ QString MainWindow::priorityColor(int priority) const {
 QString MainWindow::priorityName(int priority) const {
     if (priority >= 0 && priority <= 3) return kPriorityNames[priority];
     return kPriorityNames[0];
-}
-
-QString MainWindow::categoryName(int categoryId) const {
-    if (categoryId >= 0 && categoryId <= 3) return kCategoryNames[categoryId];
-    return kCategoryNames[0];
-}
-
-QString MainWindow::categoryColor(int categoryId) const {
-    if (categoryId >= 0 && categoryId <= 3) return qPrintable(categoryAccentHex(categoryId));
-    return categoryAccentHex(0);
 }
 
 QWidget *MainWindow::createRowWidget(const Task& task) {
@@ -865,18 +828,12 @@ QWidget *MainWindow::createRowWidget(const Task& task) {
     statusLabel->setObjectName("rowStatus");
     statusLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
-    QLabel *catLabel = new QLabel(categoryName(task.categoryId), head);
-    catLabel->setObjectName("rowCategory");
-    catLabel->setProperty("accent", categoryColor(task.categoryId));
-    catLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-
     // 先加弹簧把前面的内容顶到左边，再放截止时间。
     //
     // 之前弹簧加在最后，结果时间被挤在中间、右边留一大片空白。
     // 现在顺序是：标题（占剩余全部宽度）→ 状态/分类 chip → 弹簧 → 时间。
     // 时间固定在 78px 宽的右对齐标签里，所以所有行的时间都对齐在同一列。
     h->addWidget(statusLabel);
-    h->addWidget(catLabel);
     h->addStretch(1);
 
     // 截止时间：固定宽度 + 右对齐；没有截止时间时显示灰色占位符。
@@ -899,7 +856,6 @@ QWidget *MainWindow::createRowWidget(const Task& task) {
     stripe->setStyleSheet(stripeStyle(task.status));
     priorityBar->setStyleSheet(priorityBarStyle(task.priority));
     statusLabel->setStyleSheet(statusChipStyle(task.status));
-    catLabel->setStyleSheet(categoryChipStyle(task.categoryId));
 
     // 高优先级：整张卡片换成优先级颜色的粗描边（需求：紧急度要保证可见）
     if (const QString pb = priorityBorderStyle(task.priority); !pb.isEmpty()) {
@@ -2085,12 +2041,6 @@ void MainWindow::onSearchChanged(const QString& text) {
     refreshList();
 }
 
-void MainWindow::onCategoryFilterClicked(int category) {
-    m_categoryFilter = category;
-    updateCategoryRow();
-    refreshList();
-}
-
 void MainWindow::onHideDoneToggled(bool checked) {
     m_hideDoneChecked = checked;
     refreshList();
@@ -2583,13 +2533,12 @@ void MainWindow::onItemContextMenu(const QPoint &pos) {
     if (!snapshot) return;
     const Task current = *snapshot;
     const QString title = QString::fromStdString(current.title);
-    const QString info = QString("编号：%1\n标题：%2\n优先级：%3\n截止时间：%4\n状态：%5\n分类：%6\n备注：%7")
+    const QString info = QString("编号：%1\n标题：%2\n优先级：%3\n截止时间：%4\n状态：%5\n备注：%6")
                              .arg(current.id)
                              .arg(title)
                              .arg(priorityName(current.priority))
                              .arg(QString::fromStdString(current.deadline))
                              .arg(taskStatusText(current.status))
-                             .arg(categoryName(current.categoryId))
                              .arg(current.details.empty() ? QString("（无）")
                                                           : QString::fromStdString(current.details));
 
@@ -2997,7 +2946,6 @@ void MainWindow::applyThemeToWidgets() {
     }
 
     // 分类筛选行与排序按钮
-    updateCategoryRow();
     updateSortButton();
 
     // 主题变了时，已建的对话框也要跟着换色。
@@ -3169,13 +3117,6 @@ void MainWindow::applyCompactMode() {
     if (m_hideDone) m_hideDone->setVisible(!mini);
     if (m_suggestToggle) m_suggestToggle->setVisible(!mini);
     if (m_suggestBox) m_suggestBox->setVisible(!mini && m_suggestOpen);
-    // 紧凑模式下分类筛选被隐藏了，所以要强制回到「全部」，
-    // 否则用户会被一个看不见的筛选条件困住（列表空着却找不到原因）。
-    if (mini && m_categoryFilter != CategoryAll) {
-        m_categoryFilter = CategoryAll;
-        refreshList();
-    }
-
     if (mini) {
         m_geometryBeforeCompact = geometry();
         m_expandedBeforeCompact = m_expandedId;
@@ -3543,7 +3484,6 @@ static int run() {
         t.details = details;
         t.priority = priority;
         t.deadline = deadline;
-        t.categoryId = category;
         return window->m_doc.addTask(t);
     };
 
@@ -3615,12 +3555,6 @@ static int run() {
     check(window->m_taskList->count() == listCountBefore,
           "三轮轮转后列表条数依然不变");
 
-    // --- 分类筛选 ---
-    window->onCategoryFilterClicked(2);
-    check(window->m_taskList->count() == 1, "按「学习」筛选只剩 1 条");
-    window->onCategoryFilterClicked(-1);
-    check(window->m_taskList->count() == 3, "切回「全部」恢复 3 条");
-
     // --- 搜索：标题 + 备注子串 ---
     window->m_search->setText("笔记");
     check(window->m_taskList->count() == 1, "按备注内容搜索命中 1 条");
@@ -3680,7 +3614,6 @@ static int run() {
     edited.title = "改过的标题";
     edited.details = "改过的备注";
     edited.priority = 0;
-    edited.categoryId = 3;
     window->applyTaskEdit(firstId, edited);
     check(window->m_doc.findTask(firstId)->title == "改过的标题", "内联编辑保存了标题");
     check(window->m_doc.findTask(firstId)->details == "改过的备注", "内联编辑保存了备注");
@@ -4306,7 +4239,6 @@ static int run() {
         const Task quick = wizard.task();
         check(quick.title == "只用默认值", "任务名已保存");
         check(quick.priority == 1, "未选紧急度时用默认「中」");
-        check(quick.categoryId == 0, "未选分组时用默认「其他」");
         check(quick.deadline.empty(), "未选日期时无截止时间");
     }
 
@@ -5321,7 +5253,6 @@ int MainWindow::runSelfTest() {
             t.details = details;
             t.priority = priority;
             t.deadline = deadline;
-            t.categoryId = category;
             return t;
         };
 
@@ -5353,20 +5284,14 @@ int MainWindow::runSelfTest() {
         search.search = "不存在的内容";
         check(model.query(search).empty(), "搜不到时返回空");
 
-        // 分类：TaskFilter 自带 categoryId，界面与自检走同一条路径。
-        // 自检数据里分类 2（学习）有 2 条、0（其他）1 条、3（健康）1 条。
-        TaskFilter byCategory;
-        byCategory.categoryId = 2;
-        check(static_cast<int>(model.query(byCategory).size()) == 2,
-              "按分类筛出 2 条「学习」任务");
-        byCategory.categoryId = 0;
-        check(static_cast<int>(model.query(byCategory).size()) == 1,
-              "按分类筛出 1 条「其他」任务");
-        byCategory.categoryId = 9;          // 不存在的分类
-        check(model.query(byCategory).empty(), "不存在的分类筛不出任何任务");
-        byCategory.categoryId = -1;
-        check(static_cast<int>(model.query(byCategory).size()) == model.tasks().size(),
-              "分类为 -1 时不过滤，返回全部任务");
+        // F-006：分类并入列表 —— 原来的「按分类筛选」改成「按列表筛选」。
+        TaskFilter byList;
+        byList.listId = 1;
+        check(static_cast<int>(model.query(byList).size()) == 4, "列表 1 里有 4 条");
+        byList.listId = 2;
+        check(model.query(byList).empty(), "没有任务的列表筛不到东西");
+        byList.listId = -1;
+        check(static_cast<int>(model.query(byList).size()) == 4, "listId=-1 时不按列表过滤");
 
         TaskFilter hideDone;
         hideDone.hideDone = true;

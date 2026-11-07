@@ -230,17 +230,16 @@ bool DocumentStore::saveLists(const TaskDocument& doc) {
 
 bool DocumentStore::saveTasks(const TaskDocument& doc) {
     QSqlQuery q(m_db);
-    q.prepare("INSERT INTO tasks (id, title, details, priority, deadline, category_id, status, "
+    q.prepare("INSERT INTO tasks (id, title, details, priority, deadline, status, "
               "created_at, completed_at, list_id, starred, in_my_day, reminder, recurrence, tags, "
               "manual_order) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     for (const Task& t : doc.tasks()) {
         q.addBindValue(t.id);
         q.addBindValue(QString::fromStdString(t.title));
         q.addBindValue(QString::fromStdString(t.details));
         q.addBindValue(t.priority);
         q.addBindValue(QString::fromStdString(t.deadline));
-        q.addBindValue(t.categoryId);
         q.addBindValue(t.status);
         q.addBindValue(QString::fromStdString(t.createdAt));
         q.addBindValue(QString::fromStdString(t.completedAt));
@@ -352,7 +351,6 @@ bool DocumentStore::loadTasks(TaskDocument& doc) {
         t.details = q.value(2).toString().toStdString();
         t.priority = q.value(3).toInt();
         t.deadline = q.value(4).toString().toStdString();
-        t.categoryId = q.value(5).toInt();
         t.status = q.value(6).toInt();
         t.createdAt = q.value(7).toString().toStdString();
         t.completedAt = q.value(8).toString().toStdString();

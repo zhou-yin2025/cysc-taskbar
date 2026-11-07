@@ -120,7 +120,6 @@ private slots:
     void onImportFromPaste();  // 粘贴文本批量导入（F-005）
     void onEditCurrentTask();
     void onSearchChanged(const QString& text);
-    void onCategoryFilterClicked(int category);
     void onHideDoneToggled(bool checked);
     void onSortClicked();
     void onUndoRequested();
@@ -164,7 +163,6 @@ private slots:
 
 private:
     // 分类筛选：-1 表示全部。
-    enum { CategoryAll = -1 };
 
     // 列表排序方式；点击按钮循环切换。
     enum SortMode { SortCreatedAsc, SortDeadlineAsc, SortManual, SortModeCount };
@@ -198,7 +196,6 @@ private:
 
     // 分类筛选行
     QWidget *m_categoryRow = nullptr;
-    QPushButton *m_categoryButtons[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 
     TaskListWidget *m_taskList = nullptr;
     QPushButton *m_sortButton = nullptr;
@@ -243,7 +240,6 @@ private:
     bool m_dbReady = false;
 
     // 当前视图状态
-    int m_categoryFilter = CategoryAll;
     SortMode m_sortMode = SortCreatedAsc;
     bool m_hideDoneChecked = false;
     // 左侧栏决定的视图：要么看某个智能视图，要么看某个列表。
@@ -344,7 +340,6 @@ private:
         m_expandedId = m_expandedBeforeDoubleClick;
         applyExpansion();
     }
-    void updateCategoryRow();
     void updateSortButton();
     // 落库并刷新列表（两个新建窗口共用）。
     void createTask(const Task& task);
@@ -415,8 +410,6 @@ private:
         const int index = (status >= 0 && status <= 3) ? status : 0;
         return QString::fromLatin1(kAccent[index]);
     }
-    QString categoryName(int categoryId) const;
-    QString categoryColor(int categoryId) const;
 };
 
 #endif

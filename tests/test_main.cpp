@@ -67,14 +67,14 @@ std::string tempDbPath(const QString& name) {
 }
 
 Task makeTask(const std::string& title, int priority, const std::string& date,
-              int category = 0, int status = 0, const std::string& details = std::string()) {
+              int listId = 1, int status = 0, const std::string& details = std::string()) {
     Task t;
     t.title = title;
     t.details = details;
     t.priority = priority;
     // 空日期 = 无截止时间，不要把 "" 拼成 " 23:59"。
     t.deadline = date.empty() ? std::string() : date + " 23:59";
-    t.categoryId = category;
+    t.listId = listId;
     t.status = status;
     return t;
 }
@@ -258,10 +258,9 @@ void testModelInMemory() {
     search.search = "查无此物";
     expect(model.query(search).isEmpty(), "搜不到时返回空结果");
 
-    TaskQuery byCategory;
-    byCategory.categoryId = 2;
-    model.addTask(makeTask("study task", 1, "2026-10-13", /*category=*/2));
-    expect(model.query(byCategory).size() == 1, "category filter works");
+    // F-006：分类并入列表之后 TaskQuery 不再有分类过滤；
+    // 这里仍然多放一条任务，后面「共 4 条」的断言继续成立。
+    model.addTask(makeTask("study task", 1, "2026-10-13", /*list=*/2));
 
     TaskQuery hidden;
     hidden.hideDone = true;
@@ -284,11 +283,9 @@ void testModelInMemory() {
     Task edited = *model.findTask(a);
     edited.details = "新的备注";
     edited.priority = 3;
-    edited.categoryId = 1;
     expect(model.updateTask(a, edited), "整条更新成功");
     expect(model.findTask(a)->details == "新的备注", "备注已更新");
     expect(model.findTask(a)->priority == 3, "优先级已更新");
-    expect(model.findTask(a)->categoryId == 1, "分类已更新");
     expect(model.findTask(a)->title == "alpha task", "只改属性不会动标题");
 
     expect(model.updateDetails(a, "只改备注"), "updateDetails 成功");
@@ -418,7 +415,7 @@ void testModelPersistence() {
         // Vector would dangle as soon as the temporary dies.
         const Vector<Task> found = reloaded.searchByPrefix("persisted one");
         expect(found.size() == 1, "the persisted task is findable by prefix");
-        expect(!found.isEmpty() && found[0].priority == 2 && found[0].categoryId == 1,
+        expect(!found.isEmpty() && found[0].priority == 2,
               "field values survived the round trip");
         expect(!found.isEmpty() && found[0].details == "落库的备注内容",
               "备注字段也完成了落库往返");
@@ -1406,24 +1403,22 @@ void testTaskDocument() {
         hidden.hideDone = true;
         expect(doc.query(hidden).size() == 4, "隐藏已完成后剩 4 条");
 
-        // 分类筛选（分类仍保留：向导里仍要选分类，快捷筛选也用它）
-        // 注意：makeDocTask 不设置 categoryId，所以前面 5 条的分类都是 0（其他）。
-        TaskFilter byCategory;
-        byCategory.categoryId = 2;          // 学习
-        expect(doc.query(byCategory).empty(), "现有 5 条都不属于「学习」分类");
+        // F-006：分类并入列表 —— 原来「按分类筛选」的断言改成「按列表筛选」。
+        // 前面 5 条都在默认列表（1）里。
+        TaskFilter byList;
+        byList.listId = 1;
+        expect(doc.query(byList).size() == 5, "列表 1 里有 5 条");
 
         Task study;
         study.title = "学习类任务";
         study.listId = 1;
-        study.categoryId = 2;
         doc.addTask(study);
-        expect(doc.query(byCategory).size() == 1, "分类筛选命中一条");
-        byCategory.categoryId = 3;          // 健康：没有任务属于它
-        expect(doc.query(byCategory).empty(), "换成没有任务的分类就筛不到");
-        byCategory.categoryId = 0;          // 其他：默认分类，5 条
-        expect(doc.query(byCategory).size() == 5, "分类 0（其他）命中默认分类的 5 条");
-        byCategory.categoryId = -1;
-        expect(doc.query(byCategory).size() == 6, "分类为 -1 时不按分类过滤，共 6 条");
+        expect(doc.query(byList).size() == 6, "加一条之后列表 1 里有 6 条");
+
+        byList.listId = 2;                  // 一个没有任务的列表
+        expect(doc.query(byList).empty(), "没有任务的列表筛不到东西");
+        byList.listId = -1;
+        expect(doc.query(byList).size() == 6, "listId=-1 时不按列表过滤，共 6 条");
 
         // 搜索（标题 + 备注）
         TaskFilter search;
@@ -1841,14 +1836,15 @@ void testTaskImporter() {
 
     // --- 分类与列表
     {
-        ParseResult r = parse("任务名：x\n分类：学习\n列表：期末作业\n");
-        testutil::expect(r.tasks.size() == 1 && r.tasks[0].categoryId == 2, "分类「学习」→ 2");
+        ParseResult r = parse("任务名：x\n列表：期末作业\n");
         testutil::expect(r.tasks.size() == 1 && r.tasks[0].listName == "期末作业",
                          "列表名被保留");
-        ParseResult r2 = parse("任务名：x\n分类：不明\n");
-        testutil::expect(r2.tasks.size() == 1 && r2.tasks[0].categoryId == 0,
-                         "分类认不出时落到「其他」");
-        testutil::expect(r2.tasks.at(0).hasWarnings(), "分类认不出时有警告");
+
+        // F-006：分类并入列表之后，「分类：X」当成「列表：X」
+        ParseResult r2 = parse("任务名：x\n分类：学习\n");
+        testutil::expect(r2.tasks.size() == 1 && r2.tasks[0].listName == "学习",
+                         "旧写法「分类：学习」按列表「学习」处理");
+        testutil::expect(r2.tasks.at(0).hasWarnings(), "用「分类」时会提示已并入列表");
     }
 
     // --- 注释与缺冒号的行

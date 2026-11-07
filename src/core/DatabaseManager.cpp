@@ -167,14 +167,13 @@ bool DatabaseManager::createTables() {
 
 bool DatabaseManager::addTask(const Task& task) {
     QSqlQuery q(m_db);
-    q.prepare("INSERT INTO tasks (id, title, details, priority, deadline, category_id, status, created_at, completed_at) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    q.prepare("INSERT INTO tasks (id, title, details, priority, deadline, status, created_at, completed_at) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(task.id);
     q.addBindValue(QString::fromStdString(task.title));
     q.addBindValue(QString::fromStdString(task.details));
     q.addBindValue(task.priority);
     q.addBindValue(QString::fromStdString(task.deadline));
-    q.addBindValue(task.categoryId);
     q.addBindValue(task.status);
     q.addBindValue(QString::fromStdString(task.createdAt));
     q.addBindValue(QString::fromStdString(task.completedAt));
@@ -188,13 +187,12 @@ bool DatabaseManager::addTask(const Task& task) {
 
 bool DatabaseManager::updateTask(const Task& task) {
     QSqlQuery q(m_db);
-    q.prepare("UPDATE tasks SET title=?, details=?, priority=?, deadline=?, category_id=?, "
+    q.prepare("UPDATE tasks SET title=?, details=?, priority=?, deadline=?, "
               "status=?, created_at=?, completed_at=? WHERE id=?");
     q.addBindValue(QString::fromStdString(task.title));
     q.addBindValue(QString::fromStdString(task.details));
     q.addBindValue(task.priority);
     q.addBindValue(QString::fromStdString(task.deadline));
-    q.addBindValue(task.categoryId);
     q.addBindValue(task.status);
     q.addBindValue(QString::fromStdString(task.createdAt));
     q.addBindValue(QString::fromStdString(task.completedAt));
@@ -234,7 +232,6 @@ Vector<Task> DatabaseManager::loadAllTasks() {
         t.details = q.value(2).toString().toStdString();
         t.priority = q.value(3).toInt();
         t.deadline = q.value(4).toString().toStdString();
-        t.categoryId = q.value(5).toInt();
         t.status = q.value(6).toInt();
         t.createdAt = q.value(7).toString().toStdString();
         t.completedAt = q.value(8).toString().toStdString();
