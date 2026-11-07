@@ -27,6 +27,8 @@
 #include <QDateTimeEdit>
 #include <QDebug>
 #include <QDir>
+#include <QUrl>
+#include <QDesktopServices>
 #include <QMimeData>
 #include <QDropEvent>
 #include <QEvent>
@@ -388,6 +390,11 @@ QString rowMetaText(const Task &task) {
 
     if (!task.details.empty()) {
         parts << QString("备注");
+    }
+
+    if (!task.attachments.empty()) {
+        // 有附件才显示，不做 To Do 那种「0 已附加的文件」
+        parts << QString::fromUtf8("📄");
     }
 
     if (!task.tags.empty()) {
@@ -1324,6 +1331,41 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
     tagUsage->setStyleSheet(QString("QLabel { color: %1; font-size: 9px; }").arg(ThemeManager::hex(ThemeManager::current().cardMutedInk)));
     layout->addWidget(tagUsage);
 
+    // ---- 附件（F-008）：只记路径，不复制文件 ----
+    //
+    // 关键约束：**永远不要因为文件不存在就删掉记录**。外接硬盘没插、网盘没挂载
+    // 都会让路径「暂时不存在」，自动清理会把用户挂上去的引用吃掉。
+    // 文件不存在时只标红 + 提示，去留由用户自己决定。
+    QLabel *attachTitle = new QLabel("附件", panel);
+    attachTitle->setStyleSheet(
+        QString("QLabel { color: %1; font-size: 10px; font-weight: bold; }")
+            .arg(ThemeManager::hex(ThemeManager::current().cardTitleInk)));
+    layout->addWidget(attachTitle);
+
+    QWidget *attachBox = new QWidget(panel);
+    QVBoxLayout *attachLayout = new QVBoxLayout(attachBox);
+    attachLayout->setContentsMargins(0, 0, 0, 0);
+    attachLayout->setSpacing(2);
+    layout->addWidget(attachBox);
+
+    QPushButton *attachAddBtn = new QPushButton("＋ 添加附件", panel);
+    attachAddBtn->setObjectName("attachAdd");
+    attachAddBtn->setFixedHeight(20);
+    attachAddBtn->setCursor(Qt::PointingHandCursor);
+    attachAddBtn->setStyleSheet(
+        QString("QPushButton { background-color: %1; color: %2; border: 1px dashed %3;"
+                " padding: 0 8px; font-size: 10px; }"
+                "QPushButton:hover { border-color: %4; color: %4; }")
+            .arg(ThemeManager::hex(ThemeManager::current().cardBg),
+                 ThemeManager::hex(ThemeManager::current().cardMutedInk),
+                 ThemeManager::hex(ThemeManager::current().cardBorder),
+                 ThemeManager::hex(ThemeManager::current().accent)));
+    layout->addWidget(attachAddBtn);
+
+    // 附件路径状态：和 tagState 一样是堆上的，lambda 捕获的是指针
+    std::vector<std::string> *attachState =
+        new std::vector<std::string>(task.attachments);
+
     std::vector<std::string> *tagState = new std::vector<std::string>(task.tags);
 
     QLabel *tagsEmpty = new QLabel("还没有标签", tagBox);
@@ -1478,7 +1520,8 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
     //      的语义）。「收起」按钮负责关闭；「保存」按钮保留为"立即保存并关闭"。
     auto collectEdit = [task, titleEdit, detailsEdit, deadlineEdit, state,
                         starCheck, myDayCheck, listCombo, repeatCombo,
-                        reminderCheck, reminderEdit, stepState, tagState]() {
+                        reminderCheck, reminderEdit, stepState, tagState,
+                        attachState]() {
         Task edited = task;
         edited.title = titleEdit->text().trimmed().toStdString();
         edited.details = detailsEdit->toPlainText().toStdString();
@@ -1498,6 +1541,7 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
             edited.subtasks.push_back(entry.data);
         }
         edited.tags = *tagState;
+        edited.attachments = *attachState;
         return edited;
     };
 
@@ -1520,6 +1564,22 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
     };
 
     // 防抖：文本框连续输入时只在停手 400ms 后写一次
+    // 附件区接线：先建一次行，再挂「添加附件」。
+    // 增删之后都要立刻落库（saveInPlace 会走 collectEdit，里面已经带上 attachState）。
+    auto afterAttachChange = [saveInPlace]() { saveInPlace(); };
+    rebuildAttachmentRows(attachBox, attachLayout, attachState, afterAttachChange);
+    connect(attachAddBtn, &QPushButton::clicked, this,
+            [this, panel, attachBox, attachLayout, attachState, afterAttachChange]() {
+                const QStringList paths =
+                    QFileDialog::getOpenFileNames(panel, "选择附件（只记路径，不复制文件）");
+                if (paths.isEmpty()) return;
+                for (const QString &path : paths) {
+                    attachState->push_back(path.toStdString());
+                }
+                rebuildAttachmentRows(attachBox, attachLayout, attachState, afterAttachChange);
+                afterAttachChange();
+            });
+
     QTimer *autoSaveTimer = new QTimer(panel);
     autoSaveTimer->setSingleShot(true);
     autoSaveTimer->setInterval(400);
@@ -1848,6 +1908,86 @@ void MainWindow::refreshList() {
     m_statusLabel->setText(QString("共 %1 项 - 未完成 %2，已完成 %3　｜　单击查看详情，双击切换状态")
                                .arg(total).arg(total - done).arg(done));
     m_statusLabel->setStyleSheet(QString("QLabel { color: %1; font-size: 10px; }").arg(ThemeManager::hex(ThemeManager::current().accentDim)));
+}
+
+
+// 重建详情面板里的附件行（F-008）。
+//
+// 为什么是成员函数而不是就地写个 lambda：删掉一行之后要重建整个列表，
+// lambda 没法在内部引用自己（捕获自己的 std::function 会形成环或悬垂）。
+// 做成成员函数，递归调用天然合法。
+void MainWindow::rebuildAttachmentRows(QWidget *attachBox, QVBoxLayout *attachLayout,
+                                       std::vector<std::string> *state,
+                                       std::function<void()> onChanged) {
+    if (!attachBox || !attachLayout || !state) return;
+
+    while (QLayoutItem *child = attachLayout->takeAt(0)) {
+        if (QWidget *w = child->widget()) w->deleteLater();
+        delete child;
+    }
+
+    const Theme &th = ThemeManager::current();
+    if (state->empty()) {
+        auto *empty = new QLabel("还没有附件（只记路径，不复制文件）", attachBox);
+        empty->setStyleSheet(QString("QLabel { color: %1; font-size: 10px; }")
+                                 .arg(ThemeManager::hex(th.cardMutedInk)));
+        attachLayout->addWidget(empty);
+        return;
+    }
+
+    for (std::size_t i = 0; i < state->size(); ++i) {
+        const QString path = QString::fromStdString((*state)[i]);
+        const bool exists = QFileInfo::exists(path);
+
+        auto *row = new QWidget(attachBox);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(4);
+
+        auto *name = new QLabel(QFileInfo(path).fileName(), row);
+        name->setObjectName(QString("attachName_%1").arg(i));
+        name->setToolTip(exists ? path
+                                : QString("%1\n文件已移动或删除（记录保留，可重新定位）").arg(path));
+        name->setStyleSheet(
+            QString("QLabel { color: %1; font-size: 10px; }")
+                .arg(ThemeManager::hex(exists ? th.cardTitleInk : th.danger)));
+        rowLayout->addWidget(name, 1);
+
+        auto *openBtn = new QPushButton("打开", row);
+        openBtn->setFixedHeight(18);
+        openBtn->setEnabled(exists);
+        openBtn->setStyleSheet(
+            QString("QPushButton { background: transparent; color: %1; border: none;"
+                    " font-size: 10px; padding: 0 4px; }"
+                    "QPushButton:hover { color: %2; }")
+                .arg(ThemeManager::hex(th.cardMutedInk), ThemeManager::hex(th.accent)));
+        connect(openBtn, &QPushButton::clicked, this, [this, path]() {
+            if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+                setStatusMessage("打不开这个文件（可能已被移动或删除）", true);
+            }
+        });
+        rowLayout->addWidget(openBtn);
+
+        auto *removeBtn = new QPushButton("✕", row);
+        removeBtn->setFixedHeight(18);
+        removeBtn->setToolTip("移除引用（不会删除文件）");
+        removeBtn->setStyleSheet(
+            QString("QPushButton { background: transparent; color: %1; border: none;"
+                    " font-size: 10px; padding: 0 4px; }"
+                    "QPushButton:hover { color: %2; }")
+                .arg(ThemeManager::hex(th.cardMutedInk), ThemeManager::hex(th.danger)));
+        const std::size_t index = i;
+        connect(removeBtn, &QPushButton::clicked, this,
+                [this, attachBox, attachLayout, state, index, onChanged]() {
+                    if (index >= state->size()) return;
+                    state->erase(state->begin() + static_cast<std::ptrdiff_t>(index));
+                    rebuildAttachmentRows(attachBox, attachLayout, state, onChanged);
+                    onChanged();
+                });
+        rowLayout->addWidget(removeBtn);
+
+        attachLayout->addWidget(row);
+    }
 }
 
 // ------------------------------------------------------------------ 计划内分桶
@@ -5897,6 +6037,68 @@ static int run() {
         check(hasStar, "标了「重要」的任务行上有星标");
 
         window->m_sortMode = MainWindow::SortCreatedAsc;
+        window->refreshList();
+    }
+
+    // ==================== 附件（F-008）====================
+    {
+        window->m_smartView = SmartView::All;
+        window->m_useSmartView = true;
+        window->m_sortMode = MainWindow::SortCreatedAsc;
+        window->refreshList();
+
+        auto rowOf = [window](int taskId) -> QWidget* {
+            for (int i = 0; i < window->m_taskList->count(); ++i) {
+                QListWidgetItem *item = window->m_taskList->item(i);
+                if (item->data(Qt::UserRole).toInt() == taskId) {
+                    return window->m_taskList->itemWidget(item);
+                }
+            }
+            return nullptr;
+        };
+
+        Task withFile;
+        withFile.title = "带附件的任务";
+        withFile.listId = 1;
+        // 故意放一个不存在的路径：记录必须保留（外接盘没插就是这个样子）
+        withFile.attachments = {"C:/不存在的目录/需求文档.docx"};
+        const int fid = window->m_doc.addTask(window->withTopOrder(withFile));
+        window->persistDocument();
+        window->refreshList();
+
+        QString meta;
+        if (QWidget *row = rowOf(fid)) {
+            for (QLabel *l : row->findChildren<QLabel*>()) {
+                if (l->objectName() == "rowMeta") meta = l->text();
+            }
+        }
+        check(meta.contains(QString::fromUtf8("📄")), "有附件的任务第二行出现 📄");
+
+        // 展开详情：附件区有「添加附件」和一条附件行
+        window->expandTask(fid);
+        QCoreApplication::processEvents();
+        QWidget *row = rowOf(fid);
+        QWidget *detail = row ? row->findChild<QWidget*>("detailPanelWidget") : nullptr;
+        check(detail != nullptr, "展开后能拿到详情面板");
+        if (detail) {
+            check(detail->findChild<QPushButton*>("attachAdd") != nullptr,
+                  "详情面板里有「添加附件」按钮");
+
+            QLabel *name = detail->findChild<QLabel*>("attachName_0");
+            check(name != nullptr, "失效的附件也照样显示一条");
+            check(name && name->text() == "需求文档.docx", "附件显示的是文件名");
+            check(name && name->toolTip().contains(QString::fromUtf8("已移动或删除")),
+                  "失效附件在悬停提示里说明原因");
+            check(name && name->styleSheet().contains(
+                       ThemeManager::hex(ThemeManager::current().danger)),
+                  "失效附件标红");
+        }
+
+        check(window->m_doc.findTask(fid)
+                  && window->m_doc.findTask(fid)->attachments.size() == 1,
+              "失效路径没有被自动删掉");
+
+        window->m_expandedId = -1;
         window->refreshList();
     }
 

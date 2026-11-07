@@ -56,6 +56,9 @@ struct Task {
     bool inMyDay = false;                    // 加入我的一天（每天清空）
     std::vector<Subtask> subtasks;           // 步骤
     std::vector<std::string> tags;           // 标签（#work），由哈希表建倒排索引
+    // 附件：只记路径，不复制文件（F-008）。文件被移动/删除时不删记录，
+    // 界面上标红提示即可 —— 外接盘没插、网盘没挂载都会让文件「暂时不存在」。
+    std::vector<std::string> attachments;
     std::string reminder;                    // 提醒时间 "yyyy-MM-dd HH:mm"
     Recurrence recurrence = Recurrence::None;
     int manualOrder = 0;                     // 手工拖拽顺序（越小越靠前）

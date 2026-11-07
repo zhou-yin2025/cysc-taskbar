@@ -42,6 +42,9 @@ public:
     // 标签列表 <-> 单列文本
     static QString encodeTags(const std::vector<std::string>& tags);
     static std::vector<std::string> decodeTags(const QString& text);
+    // 附件路径一列存，用换行分隔（路径里不会出现换行）。
+    static QString encodeAttachments(const std::vector<std::string>& paths);
+    static std::vector<std::string> decodeAttachments(const QString& text);
 
 private:
     bool createSchema();

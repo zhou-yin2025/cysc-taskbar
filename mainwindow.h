@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <functional>
 #include <QWidget>
 #include <QListWidget>
 #include <QMimeData>
@@ -361,6 +362,11 @@ private:
     void setupReminder();
 
     void refreshList();
+
+    // --- F-008：附件行 ---
+    void rebuildAttachmentRows(QWidget *attachBox, QVBoxLayout *attachLayout,
+                               std::vector<std::string> *state,
+                               std::function<void()> onChanged);
 
     // --- F-007：计划内按时间分桶 ---
     void appendBucketHeader(PlannedBucket bucket, int count);

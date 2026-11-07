@@ -26,6 +26,7 @@ const char* kAlterColumns[] = {
     "ALTER TABLE tasks ADD COLUMN recurrence INTEGER DEFAULT 0",
     "ALTER TABLE tasks ADD COLUMN tags TEXT DEFAULT ''",
     "ALTER TABLE tasks ADD COLUMN manual_order INTEGER DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN attachments TEXT DEFAULT ''",
 };
 
 } // namespace
@@ -107,6 +108,7 @@ bool DocumentStore::createSchema() {
             "reminder TEXT DEFAULT '',"
             "recurrence INTEGER DEFAULT 0,"
             "tags TEXT DEFAULT '',"
+            "attachments TEXT DEFAULT '',"
             "manual_order INTEGER DEFAULT 0"
             ")")) {
         m_lastError = q.lastError().text();
@@ -176,6 +178,27 @@ std::vector<std::string> DocumentStore::decodeTags(const QString& text) {
     return out;
 }
 
+
+QString DocumentStore::encodeAttachments(const std::vector<std::string>& paths) {
+    QString out;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        if (i > 0) out.append(QLatin1Char('\n'));
+        out.append(QString::fromStdString(paths[i]));
+    }
+    return out;
+}
+
+std::vector<std::string> DocumentStore::decodeAttachments(const QString& text) {
+    std::vector<std::string> out;
+    if (text.isEmpty()) return out;
+    // 只按换行切；路径两端的空格可能是文件名的一部分，所以不 trim。
+    const QStringList parts = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString& part : parts) {
+        if (!part.isEmpty()) out.push_back(part.toStdString());
+    }
+    return out;
+}
+
 // ------------------------------------------------------------------ 写入
 
 bool DocumentStore::saveDocument(const TaskDocument& doc) {
@@ -232,8 +255,8 @@ bool DocumentStore::saveTasks(const TaskDocument& doc) {
     QSqlQuery q(m_db);
     q.prepare("INSERT INTO tasks (id, title, details, priority, deadline, status, "
               "created_at, completed_at, list_id, starred, in_my_day, reminder, recurrence, tags, "
-              "manual_order) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+              "attachments, manual_order) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     for (const Task& t : doc.tasks()) {
         q.addBindValue(t.id);
         q.addBindValue(QString::fromStdString(t.title));
@@ -249,6 +272,7 @@ bool DocumentStore::saveTasks(const TaskDocument& doc) {
         q.addBindValue(QString::fromStdString(t.reminder));
         q.addBindValue(static_cast<int>(t.recurrence));
         q.addBindValue(encodeTags(t.tags));
+        q.addBindValue(encodeAttachments(t.attachments));
         q.addBindValue(t.manualOrder);
         if (!q.exec()) {
             m_lastError = q.lastError().text();
@@ -335,7 +359,8 @@ bool DocumentStore::loadLists(TaskDocument& doc) {
 bool DocumentStore::loadTasks(TaskDocument& doc) {
     QSqlQuery q(m_db);
     if (!q.exec("SELECT id, title, details, priority, deadline, category_id, status, created_at, "
-                "completed_at, list_id, starred, in_my_day, reminder, recurrence, tags, manual_order "
+                "completed_at, list_id, starred, in_my_day, reminder, recurrence, tags, attachments, "
+                "manual_order "
                 "FROM tasks ORDER BY id")) {
         m_lastError = q.lastError().text();
         qWarning() << "DocumentStore: loadTasks failed:" << m_lastError;
@@ -361,7 +386,8 @@ bool DocumentStore::loadTasks(TaskDocument& doc) {
         const int rec = q.value(13).toInt();
         t.recurrence = (rec >= 0 && rec <= 5) ? static_cast<Recurrence>(rec) : Recurrence::None;
         t.tags = decodeTags(q.value(14).toString());
-        t.manualOrder = q.value(15).toInt();
+        t.attachments = decodeAttachments(q.value(15).toString());
+        t.manualOrder = q.value(16).toInt();
         maxId = std::max(maxId, t.id + 1);
         loaded.push_back(t);
     }

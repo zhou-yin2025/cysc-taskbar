@@ -71,6 +71,22 @@ inline void run() {
         expect(padded.size() == 2, "解码会跳过空段并去空白");
     }
 
+    // ---------------- 附件路径编解码（F-008）----------------
+    {
+        const std::vector<std::string> paths = {
+            "C:/Users/me/Desktop/需求.docx",
+            "D:/资料/2026 期末 复习.pdf",
+        };
+        const QString encoded = DocumentStore::encodeAttachments(paths);
+        expect(encoded.contains(QLatin1Char('\n')), "附件用换行分隔");
+        const std::vector<std::string> back = DocumentStore::decodeAttachments(encoded);
+        expect(back.size() == 2, "附件编解码数量一致");
+        expect(back.size() == 2 && back[1] == "D:/资料/2026 期末 复习.pdf",
+               "带空格的中文路径原样还原（不 trim）");
+        expect(DocumentStore::encodeAttachments({}).isEmpty(), "空附件列表编出空文本");
+        expect(DocumentStore::decodeAttachments(QString()).empty(), "空文本解出空附件");
+    }
+
     // ---------------- 往返：存进去再读出来 ----------------
     {
         const QString path = freshDbPath("roundtrip.db");
@@ -87,6 +103,8 @@ inline void run() {
         withSteps.priority = 3;
         withSteps.deadline = storeDayOffset(2);
         withSteps.tags = {"工作", "紧急"};
+        // 附件只记路径；这里故意放一个**不存在**的路径，验证它照样落库读回
+        withSteps.attachments = {"C:/不存在的目录/需求.docx", "/tmp/复习笔记.pdf"};
         withSteps.starred = true;
         withSteps.inMyDay = true;
         withSteps.reminder = storeDayOffset(1);
@@ -138,6 +156,10 @@ inline void run() {
             expect(t->inMyDay, "我的一天标记还原");
             expect(t->reminder == withSteps.reminder, "提醒时间还原");
             expect(t->recurrence == Recurrence::Weekly, "重复规则还原");
+            expect(t->attachments.size() == 2, "附件数量还原");
+            expect(t->attachments.size() == 2
+                       && t->attachments[0] == "C:/不存在的目录/需求.docx",
+                   "失效路径也原样保留（绝不因为文件不存在就删记录）");
             expect(t->tags.size() == 2, "标签数量还原");
             expect(t->hasTag("工作") && t->hasTag("紧急"), "标签内容还原");
             expect(t->subtasks.size() == 2, "子任务数量还原");
