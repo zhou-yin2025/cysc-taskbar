@@ -22,19 +22,12 @@ void TaskDraft::setPriority(int priority) {
     }
 }
 
-void TaskDraft::setCategory(int category) {
-    if (category >= 0 && category <= 3) {
-        m_category = category;
-    }
-}
-
 TaskDraft::Outcome TaskDraft::restart() {
     m_stage = StageTitle;
     m_title.clear();
     m_details.clear();
     m_priority = 1;
     m_deadline = QDateTime();      // 默认无截止时间
-    m_category = 0;
     clearInput();
     return StageChanged;
 }
@@ -43,7 +36,6 @@ void TaskDraft::loadFrom(const Task& task) {
     m_title = QString::fromStdString(task.title);
     m_details = QString::fromStdString(task.details);
     m_priority = task.priority;
-    m_category = task.categoryId;
     m_stage = StageTitle;
 
     const QDateTime parsed = QDateTime::fromString(QString::fromStdString(task.deadline),
@@ -108,10 +100,6 @@ TaskDraft::Outcome TaskDraft::handleDigit(int digit) {
         clearInput();
         return StageChanged;
     }
-    if (m_stage == StageCategory) {
-        m_category = digit - 1;      // 1..4 -> Other/Work/Study/Health
-        return Committed;
-    }
     return None;
 }
 
@@ -135,12 +123,11 @@ TaskDraft::Outcome TaskDraft::handleTab(const QString& inputText) {
 
         case StageDate: {
             const QString raw = inputText.trimmed();
-            // 空输入表示跳过日期，不算错误。
+            // 空输入表示跳过日期，不算错误；日期是最后一栏，填完就是完成。
             if (raw.isEmpty()) {
                 m_deadline = QDateTime();
-                m_stage = StageCategory;
                 clearInput();
-                return StageChanged;
+                return Committed;
             }
             const QDateTime parsed = dateFromInput(raw);
             if (!parsed.isValid()) {
@@ -149,11 +136,9 @@ TaskDraft::Outcome TaskDraft::handleTab(const QString& inputText) {
                 return Rejected;
             }
             m_deadline = parsed;
-            m_stage = StageCategory;
             clearInput();
-            return StageChanged;
+            return Committed;
         }
-        case StageCategory:
         default:
             return restart();
     }
@@ -186,7 +171,7 @@ TaskDraft::Outcome TaskDraft::handleEnter(const QString& inputText) {
         return Committed;
     }
 
-    if (m_stage == StagePriority || m_stage == StageCategory) {
+    if (m_stage == StagePriority) {
         return Committed;
     }
     return None;
@@ -207,13 +192,7 @@ TaskDraft::Outcome TaskDraft::choosePriority(int priority) {
 TaskDraft::Outcome TaskDraft::chooseDateOffset(int offsetDays) {
     m_deadline = QDateTime(QDate::currentDate().addDays(offsetDays),
                            QTime(kDefaultHour, kDefaultMinute));
-    m_stage = StageCategory;
     clearInput();
-    return StageChanged;
-}
-TaskDraft::Outcome TaskDraft::chooseCategory(int category) {
-    if (category < 0 || category > 3) return None;
-    m_category = category;
     return Committed;
 }
 
@@ -223,7 +202,6 @@ Task TaskDraft::toTask() const {
     t.details = m_details.toStdString();
     t.priority = m_priority;
     t.deadline = deadlineText().toStdString();
-    t.categoryId = m_category;
     t.createdAt = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm").toStdString();
     t.status = 0;
     return t;

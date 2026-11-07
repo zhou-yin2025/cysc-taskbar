@@ -17,7 +17,6 @@
 namespace {
 
 const char* kPriorityNames[4] = {"低", "中", "高", "紧急"};
-const char* kCategoryNames[4] = {"其他", "工作", "学习", "健康"};
 
 // 取色统一走主题（原来这里是各自一份写死的十六进制）。
 QString themeHex(const QColor &c) { return ThemeManager::hex(c); }
@@ -99,20 +98,6 @@ void TaskDialog::buildUi() {
     priorityLayout->addStretch();
     form->addRow("优先级：", priorityRow);
 
-    // 分类
-    QWidget *categoryRow = new QWidget(this);
-    QHBoxLayout *categoryLayout = new QHBoxLayout(categoryRow);
-    categoryLayout->setContentsMargins(0, 0, 0, 0);
-    categoryLayout->setSpacing(6);
-    for (int i = 0; i < 4; ++i) {
-        QPushButton *btn = new QPushButton(kCategoryNames[i], categoryRow);
-        btn->setToolTip(QString("Ctrl+%1").arg(i + 1));
-        connect(btn, &QPushButton::clicked, this, [this, i]() { setCategory(i); });
-        m_categoryButtons[i] = btn;
-        categoryLayout->addWidget(btn);
-    }
-    categoryLayout->addStretch();
-    form->addRow("分类：", categoryRow);
 
     // 截止时间：可勾选（不勾选 = 无截止时间），精确到分钟
     QWidget *deadlineRow = new QWidget(this);
@@ -160,8 +145,6 @@ void TaskDialog::refreshChips() {
     for (int i = 0; i < 4; ++i) {
         m_priorityButtons[i]->setStyleSheet(
             chipStyle(themeHex(ThemeManager::current().priorityAccent[i]), m_draft.priority() == i));
-        m_categoryButtons[i]->setStyleSheet(
-            chipStyle(themeHex(ThemeManager::current().categoryAccent[i]), m_draft.category() == i));
     }
     // 这里刻意不碰 m_deadlineEdit：draft 里的时间是窗口打开时的快照，
     // 用户可能已经改过时间控件。以前在这里回写会导致「改完时间再点优先级/
@@ -170,11 +153,6 @@ void TaskDialog::refreshChips() {
 
 void TaskDialog::setPriority(int priority) {
     m_draft.setPriority(priority);
-    refreshChips();
-}
-
-void TaskDialog::setCategory(int category) {
-    m_draft.setCategory(category);
     refreshChips();
 }
 
@@ -241,15 +219,11 @@ void TaskDialog::onAccept() {
 }
 
 void TaskDialog::keyPressEvent(QKeyEvent *event) {
-    // 1-4 选优先级、Ctrl+1-4 选分类：把 V0.0.2 的快捷键带进窗口。
+    // 1-4 选优先级（F-006 之后分类不再是可编辑字段，Ctrl+1-4 一并取消）。
     const int key = event->key();
     if (key >= Qt::Key_1 && key <= Qt::Key_4) {
         const int index = key - Qt::Key_1;
-        if (event->modifiers() & Qt::ControlModifier) {
-            setCategory(index);
-        } else {
-            setPriority(index);
-        }
+        setPriority(index);
         event->accept();
         return;
     }

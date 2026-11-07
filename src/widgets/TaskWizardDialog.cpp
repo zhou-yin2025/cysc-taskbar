@@ -14,9 +14,8 @@ namespace {
 
 const char* kPriorityNames[4] = {"① 低", "② 中", "③ 高", "④ 紧急"};
 // 分组默认四项；以后做设置时改成可配置（读一个列表即可），这里先写死。
-const char* kCategoryNames[4] = {"① 其他", "② 工作", "③ 学习", "④ 健康"};
 
-const char* kStageTitles[4] = {"第 1 栏：任务名", "第 2 栏：紧急度", "第 3 栏：分组", "第 4 栏：日期"};
+const char* kStageTitles[3] = {"第 1 栏：任务名", "第 2 栏：紧急度", "第 3 栏：日期"};
 
 QString themeHex(const QColor &c) { return ThemeManager::hex(c); }
 
@@ -106,26 +105,6 @@ void TaskWizardDialog::buildUi() {
     }
     priorityLayout->addStretch();
     m_stack->addWidget(m_priorityPage);
-
-    // ---- 第 3 栏：分组 ----
-    m_categoryPage = new QWidget(m_stack);
-    QHBoxLayout *categoryLayout = new QHBoxLayout(m_categoryPage);
-    categoryLayout->setContentsMargins(0, 0, 0, 0);
-    categoryLayout->setSpacing(8);
-    for (int i = 0; i < 4; ++i) {
-        QPushButton *btn = new QPushButton(kCategoryNames[i], m_categoryPage);
-        btn->setToolTip(QString("按 %1 选择").arg(i + 1));
-        connect(btn, &QPushButton::clicked, this, [this, i]() {
-            m_draft.setCategory(i);
-            refreshChoices();
-            advance();                      // 选完分组进入日期栏
-        });
-        m_categoryButtons[i] = btn;
-        categoryLayout->addWidget(btn);
-    }
-    categoryLayout->addStretch();
-    m_stack->addWidget(m_categoryPage);
-
     // ---- 第 4 栏：日期（可留空） ----
     QWidget *datePage = new QWidget(m_stack);
     QVBoxLayout *dateLayout = new QVBoxLayout(datePage);
@@ -162,24 +141,8 @@ void TaskWizardDialog::buildUi() {
 void TaskWizardDialog::setStage(TaskDraft::Stage stage) {
     m_draft.setStageDirect(stage);
 
-    // ---- 枚举值 ≠ 页签下标 ----
-    //
-    // TaskDraft::Stage 的声明顺序是 Title, Priority, Date, Category（历史原因，
-    // "Date" 排在 "Category" 前面），也就是 StageDate == 2、StageCategory == 3。
-    // 而这里的页签顺序是 任务名 / 紧急度 / 分组 / 日期 —— 分组在第 3 页、日期在第 4 页。
-    //
-    // 原来直接写 m_stack->setCurrentIndex(stage)，于是走到「分组」那一栏时
-    // 显示的是**日期页**（反之亦然）—— 用户看到的现象就是
-    // "没看到分栏界面，直接跳到了日期"。
-    //
-    // 所以这里必须显式映射，绝不能拿枚举当下标用。
-    int page = 0;
-    switch (stage) {
-        case TaskDraft::StageTitle:    page = 0; break;
-        case TaskDraft::StagePriority: page = 1; break;
-        case TaskDraft::StageCategory: page = 2; break;
-        case TaskDraft::StageDate:     page = 3; break;
-    }
+    // F-006 之后只剩三栏，枚举顺序就是页签顺序：任务名 0 / 紧急度 1 / 日期 2。
+    const int page = static_cast<int>(stage);
 
     switch (stage) {
         case TaskDraft::StageTitle:
@@ -191,10 +154,6 @@ void TaskWizardDialog::setStage(TaskDraft::Stage stage) {
         case TaskDraft::StagePriority:
             m_stack->setCurrentIndex(page);
             m_hintLabel->setText("按 1-4 选择紧急度　Tab 跳过　Enter 完成　Backspace 返回");
-            break;
-        case TaskDraft::StageCategory:
-            m_stack->setCurrentIndex(page);
-            m_hintLabel->setText("按 1-4 选择分组　Tab 跳过　Enter 完成　Backspace 返回");
             break;
         case TaskDraft::StageDate:
             m_stack->setCurrentIndex(page);
@@ -215,8 +174,6 @@ void TaskWizardDialog::refreshChoices() {
     for (int i = 0; i < 4; ++i) {
         m_priorityButtons[i]->setStyleSheet(
             choiceStyle(themeHex(ThemeManager::current().priorityAccent[i]), m_draft.priority() == i));
-        m_categoryButtons[i]->setStyleSheet(
-            choiceStyle(themeHex(ThemeManager::current().categoryAccent[i]), m_draft.category() == i));
     }
 }
 
@@ -225,17 +182,15 @@ void TaskWizardDialog::refreshSummary() {
     const QString deadline = m_draft.hasDeadline() ? m_draft.deadlineText() : QString("无截止时间");
     // 去掉名称里的「① 」前缀，摘要只显示纯文字。
     const QString priorityName = QString(kPriorityNames[m_draft.priority()]).mid(2);
-    const QString categoryName = QString(kCategoryNames[m_draft.category()]).mid(2);
-    m_summary->setText(QString("　%1　·　%2　·　%3　·　%4")
+    m_summary->setText(QString("　%1　·　%2　·　%3")
                            .arg(title)
                            .arg(priorityName)
-                           .arg(categoryName)
                            .arg(deadline));
 }
 
 bool TaskWizardDialog::stageUsesChoices() const {
     const TaskDraft::Stage stage = m_draft.stage();
-    return stage == TaskDraft::StagePriority || stage == TaskDraft::StageCategory;
+    return stage == TaskDraft::StagePriority;
 }
 
 void TaskWizardDialog::advance() {
@@ -251,9 +206,6 @@ void TaskWizardDialog::advance() {
             return;
         }
         case TaskDraft::StagePriority:
-            setStage(TaskDraft::StageCategory);
-            return;
-        case TaskDraft::StageCategory:
             setStage(TaskDraft::StageDate);
             return;
         case TaskDraft::StageDate: {
@@ -283,11 +235,8 @@ void TaskWizardDialog::retreat() {
         case TaskDraft::StagePriority:
             setStage(TaskDraft::StageTitle);
             return;
-        case TaskDraft::StageCategory:
-            setStage(TaskDraft::StagePriority);
-            return;
         case TaskDraft::StageDate:
-            setStage(TaskDraft::StageCategory);
+            setStage(TaskDraft::StagePriority);
             return;
     }
 }
@@ -322,7 +271,6 @@ bool TaskWizardDialog::collectCurrentStage() {
             return true;
         }
         case TaskDraft::StagePriority:
-        case TaskDraft::StageCategory:
             // 选择题栏：没选就用当前默认值
             return true;
     }
@@ -450,13 +398,9 @@ void TaskWizardDialog::keyPressEvent(QKeyEvent *event) {
         const int key = event->key();
         if (key >= Qt::Key_1 && key <= Qt::Key_4) {
             const int index = key - Qt::Key_1;
-            if (m_draft.stage() == TaskDraft::StagePriority) {
-                m_draft.setPriority(index);
-                setStage(TaskDraft::StageCategory);
-            } else {
-                m_draft.setCategory(index);
-                setStage(TaskDraft::StageDate);
-            }
+            // 只剩优先级这一栏是选择题了。
+            m_draft.setPriority(index);
+            setStage(TaskDraft::StageDate);
             event->accept();
             return;
         }

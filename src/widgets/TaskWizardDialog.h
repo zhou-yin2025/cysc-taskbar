@@ -77,9 +77,7 @@ private:
     QLineEdit *m_titleEdit = nullptr;
     QLineEdit *m_dateEdit = nullptr;
     QWidget *m_priorityPage = nullptr;
-    QWidget *m_categoryPage = nullptr;
     QPushButton *m_priorityButtons[4] = {nullptr, nullptr, nullptr, nullptr};
-    QPushButton *m_categoryButtons[4] = {nullptr, nullptr, nullptr, nullptr};
     QLabel *m_summary = nullptr;
 };
 

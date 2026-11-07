@@ -538,7 +538,6 @@ void testTaskDraft() {
         TaskDraft d;
         expect(d.stage() == TaskDraft::StageTitle, "初始阶段是「标题」");
         expect(d.priority() == 1, "默认优先级是「中」");
-        expect(d.category() == 0, "默认分类是「其他」");
 
         // 空标题必须被拒绝，并且停留在当前阶段
         expect(d.handleTab("   ") == TaskDraft::Rejected, "空标题被拒绝");
@@ -552,16 +551,12 @@ void testTaskDraft() {
         expect(d.handleTab(QString()) == TaskDraft::StageChanged, "Tab 跳过优先级");
         expect(d.stage() == TaskDraft::StageDate, "当前阶段是「日期」");
 
-        expect(d.handleTab(QString()) == TaskDraft::StageChanged, "空日期按「不设截止时间」处理并前进");
-        expect(d.stage() == TaskDraft::StageCategory, "当前阶段是「分类」");
+        expect(d.handleTab(QString()) == TaskDraft::Committed,
+              "空日期直接完成（F-006 之后日期就是最后一栏）");
         expect(!d.hasDeadline(), "空输入表示无截止时间");
         expect(d.deadlineText().isEmpty(), "无截止时间时 deadlineText 为空");
         expect(d.toTask().deadline.empty(), "无截止时间时写库的 deadline 为空串");
 
-        // Tab 在分类阶段表示重新开始
-        expect(d.handleTab(QString()) == TaskDraft::StageChanged, "分类阶段 Tab 重新开始");
-        expect(d.stage() == TaskDraft::StageTitle, "回到标题阶段");
-        expect(d.title().isEmpty(), "重新开始会清空标题");
     }
 
     {
@@ -575,9 +570,6 @@ void testTaskDraft() {
         expect(d.handleDigit(9) == TaskDraft::None, "日期阶段的数字键无效");
         expect(d.handleDigit(0) == TaskDraft::None, "0 不是有效的快捷选择");
 
-        expect(d.handleDigit(3) == TaskDraft::None, "分类阶段的数字键应由 chooseCategory 处理");
-        expect(d.chooseCategory(2) == TaskDraft::Committed, "选择分类即提交");
-        expect(d.category() == 2, "分类被设为「学习」(2)");
     }
 
     {
@@ -586,10 +578,8 @@ void testTaskDraft() {
         d.handleTab("买菜");
         expect(d.choosePriority(2) == TaskDraft::StageChanged, "点击「高」进入日期阶段");
         expect(d.priority() == 2, "优先级被设为高(2)");
-        expect(d.chooseDateOffset(1) == TaskDraft::StageChanged, "点击「明天」进入分类阶段");
+        expect(d.chooseDateOffset(1) == TaskDraft::Committed, "点击「明天」直接完成");
         expect(d.deadline().date() == QDate::currentDate().addDays(1), "日期是明天");
-        expect(d.chooseCategory(1) == TaskDraft::Committed, "点击「工作」即提交");
-        expect(d.category() == 1, "分类被设为工作(1)");
     }
 
     {
@@ -624,7 +614,7 @@ void testTaskDraft() {
         expect(!d.inputError().isEmpty(), "非法日期给出了错误提示");
 
         // 合法输入带时间后应被接受
-        expect(d.handleTab("10/12 08:15") == TaskDraft::StageChanged, "带时间的日期被接受");
+        expect(d.handleTab("10/12 08:15") == TaskDraft::Committed, "带时间的日期被接受（日期栏即完成）");
         expect(d.deadline().time() == QTime(8, 15), "截止时间保存了分钟");
     }
 
@@ -636,14 +626,12 @@ void testTaskDraft() {
         existing.title = "已有任务";
         existing.details = "已有的备注";
         existing.priority = 3;
-        existing.categoryId = 2;
         existing.deadline = "2026-12-01 18:45";
 
         d.loadFrom(existing);
         expect(d.title() == "已有任务", "loadFrom 载入标题");
         expect(d.details() == "已有的备注", "loadFrom 载入备注");
         expect(d.priority() == 3, "loadFrom 载入优先级");
-        expect(d.category() == 2, "loadFrom 载入分类");
         expect(d.deadlineText() == "2026-12-01 18:45", "loadFrom 保留了分钟精度");
 
         d.setDetails("改过的备注");
@@ -660,18 +648,16 @@ void testTaskDraft() {
         TaskDraft d;
         d.setDeadline(QDateTime(QDate(2026, 11, 5), QTime(16, 40)));
         d.setPriority(3);
-        d.setCategory(1);
         expect(d.deadlineText() == "2026-11-05 16:40",
-              "改时间后再调整优先级/分类，时间不被重置");
-        expect(d.priority() == 3 && d.category() == 1, "优先级与分类都已生效");
+              "改时间后再调整优先级，时间不被重置");
+        expect(d.priority() == 3, "优先级已生效");
 
         // 顺序调换（先点分类再点优先级）同样不能丢时间
         TaskDraft e;
         e.setDeadline(QDateTime(QDate(2026, 12, 1), QTime(8, 5)));
-        e.setCategory(2);
         e.setPriority(0);
         expect(e.deadlineText() == "2026-12-01 08:05",
-              "先分类后优先级，时间同样保留");
+              "再改一次优先级，时间同样保留");
     }
 
     {

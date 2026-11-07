@@ -18,9 +18,13 @@
 // inline detail editor (loaded from an existing task via loadFrom, saved via
 // toTask). Keeping the state machine separate means the whole flow is
 // unit-testable without a GUI.
+//
+// F-006：分类（其他/工作/学习/健康）与列表合并之后，这里不再有「分类」这一栏。
+// 向导现在是三栏：任务名 -> 紧急度 -> 日期。列表归属由详情面板的下拉决定，
+// 等 F-002/F-003 重做向导时再把「列表」和「备注」加进来。
 class TaskDraft {
 public:
-    enum Stage { StageTitle, StagePriority, StageDate, StageCategory };
+    enum Stage { StageTitle, StagePriority, StageDate };
 
     // What the caller should do after feeding a key.
     enum Outcome {
@@ -39,7 +43,6 @@ public:
     // 无截止时间时返回无效的 QDateTime。
     const QDateTime& deadline() const { return m_deadline; }
     bool hasDeadline() const { return m_deadline.isValid(); }
-    int category() const { return m_category; }
     const QString& inputError() const { return m_inputError; }
 
     // Direct field setters, used by the dialog's widgets and the inline editor.
@@ -48,21 +51,19 @@ public:
     void setPriority(int priority);
     void setDeadline(const QDateTime& deadline) { m_deadline = deadline; }
     void clearDeadline() { m_deadline = QDateTime(); }
-    void setCategory(int category);
 
     // 直接切到某一栏（向导的前进/后退用），不清空已填内容。
     void setStageDirect(Stage stage) { m_stage = stage; clearInput(); }
 
-    // 1-4 quick select, valid only in the priority and category stages.
+    // 1-4 quick select, valid in the priority stage.
     Outcome handleDigit(int digit);
     Outcome handleTab(const QString& inputText);
     Outcome handleEnter(const QString& inputText);
     Outcome handleEscape();
 
-    // Clicking a priority/date/category button.
+    // Clicking a priority/date button.
     Outcome choosePriority(int priority);
     Outcome chooseDateOffset(int offsetDays);
-    Outcome chooseCategory(int category);
 
     // Clears everything and returns to the title stage.
     Outcome restart();
@@ -88,7 +89,6 @@ private:
     QString m_details;
     int m_priority;
     QDateTime m_deadline;
-    int m_category;
     QString m_inputError;
 };
 

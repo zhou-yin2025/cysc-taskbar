@@ -989,25 +989,6 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
     pl->addStretch();
     layout->addWidget(priorityRow);
 
-    // 分类
-    QWidget *categoryRow = new QWidget(panel);
-    QHBoxLayout *cl = new QHBoxLayout(categoryRow);
-    cl->setContentsMargins(0, 0, 0, 0);
-    cl->setSpacing(4);
-    QLabel *clabel = new QLabel("分类", categoryRow);
-    cl->addWidget(clabel);
-    QPushButton *categoryButtons[4] = {nullptr, nullptr, nullptr, nullptr};
-    for (int i = 0; i < 4; ++i) {
-        QPushButton *btn = new QPushButton(kCategoryNames[i], categoryRow);
-        btn->setFixedHeight(20);
-        btn->setCheckable(true);
-        btn->setChecked(task.categoryId == i);
-        btn->setStyleSheet(chipStyle(qPrintable(categoryAccentHex(i)), task.categoryId == i));
-        categoryButtons[i] = btn;
-        cl->addWidget(btn);
-    }
-    cl->addStretch();
-    layout->addWidget(categoryRow);
 
     // 截止时间（精确到分钟）
     QWidget *deadlineRow = new QWidget(panel);
@@ -1344,11 +1325,9 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
     // 本次展开期间的选择状态（lambda 之间共享）
     struct Preference {
         int priority = 0;
-        int category = 0;
     };
     Preference *state = new Preference;
     state->priority = task.priority;
-    state->category = task.categoryId;
 
     for (int i = 0; i < 4; ++i) {
         connect(priorityButtons[i], &QPushButton::clicked, this,
@@ -1357,14 +1336,6 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
                     for (int k = 0; k < 4; ++k) {
                         priorityButtons[k]->setChecked(k == i);
                         priorityButtons[k]->setStyleSheet(chipStyle(priorityAccentHex(k), k == i));
-                    }
-                });
-        connect(categoryButtons[i], &QPushButton::clicked, this,
-                [this, state, categoryButtons, i]() {
-                    state->category = i;
-                    for (int k = 0; k < 4; ++k) {
-                        categoryButtons[k]->setChecked(k == i);
-                        categoryButtons[k]->setStyleSheet(chipStyle(categoryAccentHex(k), k == i));
                     }
                 });
     }
@@ -1411,7 +1382,7 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
         edited.details = detailsEdit->toPlainText().toStdString();
         edited.deadline = deadlineEdit->dateTime().toString("yyyy-MM-dd HH:mm").toStdString();
         edited.priority = state->priority;
-        edited.categoryId = state->category;
+        // F-006：分类不再是可编辑字段 —— edited 复制自 task，保留原值即可。
         edited.starred = starCheck->isChecked();
         edited.inMyDay = myDayCheck->isChecked();
         edited.listId = listCombo->currentData().toInt();
@@ -4240,13 +4211,10 @@ static int run() {
 
         const QList<QPushButton*> buttons = dialog.findChildren<QPushButton*>();
         QPushButton *priorityButton = nullptr;
-        QPushButton *categoryButton = nullptr;
         for (QPushButton *b : buttons) {
             if (!priorityButton && b->text() == "紧急") priorityButton = b;
-            if (!categoryButton && b->text() == "学习") categoryButton = b;
         }
-        check(priorityButton != nullptr && categoryButton != nullptr,
-              "新建任务窗口里有优先级与分类按钮");
+        check(priorityButton != nullptr, "新建任务窗口里有优先级按钮");
 
         QCheckBox *deadlineToggle = nullptr;
         for (QCheckBox *c : dialog.findChildren<QCheckBox*>()) {
@@ -4254,7 +4222,7 @@ static int run() {
         }
         check(deadlineToggle != nullptr, "新建任务窗口里有「设置截止时间」勾选框");
 
-        if (deadlineEdit && priorityButton && categoryButton && deadlineToggle) {
+        if (deadlineEdit && priorityButton && deadlineToggle) {
             deadlineToggle->setChecked(true);      // 无截止时间时需先勾选
             const QDateTime wanted(QDate(2026, 11, 5), QTime(16, 40));
             deadlineEdit->setDateTime(wanted);
@@ -4264,9 +4232,7 @@ static int run() {
             check(deadlineEdit->dateTime() == wanted,
                   "点「紧急」后时间没有被重置");
 
-            categoryButton->click();
-            check(deadlineEdit->dateTime() == wanted,
-                  "再点「学习」后时间仍未被重置");
+            // F-006：分类不再是可编辑字段，这里只验证优先级不会重置时间。
 
             // 保存出来的任务必须带上改过的时间与刚选的属性
             dialog.findChild<QLineEdit*>()->setText("回归测试任务");
@@ -4274,7 +4240,6 @@ static int run() {
             check(produced.deadline == "2026-11-05 16:40",
                   "确认后时间按用户输入保存");
             check(produced.priority == 3, "确认后优先级是「紧急」");
-            check(produced.categoryId == 2, "确认后分类是「学习」");
         }
     }
 
@@ -4315,19 +4280,14 @@ static int run() {
         QKeyEvent digit3(QEvent::KeyPress, Qt::Key_3, Qt::NoModifier);
         QApplication::sendEvent(&wizard, &digit3);
 
-        // 第 3 栏按 2 -> 分组=工作
-        QKeyEvent digit2(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier);
-        QApplication::sendEvent(&wizard, &digit2);
-
-        // 第 4 栏留空 → Enter 完成
+        // 第 3 栏（日期）留空 → Enter 完成
         QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
         QApplication::sendEvent(&wizard, &enter);
 
-        check(wizard.result() == QDialog::Accepted, "第 4 栏留空按 Enter 即完成");
+        check(wizard.result() == QDialog::Accepted, "第 3 栏留空按 Enter 即完成");
         const Task produced = wizard.task();
         check(produced.title == "向导建的任务", "向导保存了任务名");
         check(produced.priority == 2, "按 3 选出的紧急度是「高」");
-        check(produced.categoryId == 1, "按 2 选出的分组是「工作」");
         check(produced.deadline.empty(), "跳过日期得到的是无截止时间");
     }
 
@@ -5033,7 +4993,7 @@ static int run() {
         wiz.testGoToStage(TaskDraft::StageTitle);
         check(wiz.testStage() == TaskDraft::StageTitle, "向导起点是「任务名」");
         check(wiz.testPageIndex() == 0, "起点显示第 1 页");
-        check(wiz.testPageCount() == 4, "向导一共 4 栏（任务名/紧急度/分组/日期）");
+        check(wiz.testPageCount() == 3, "向导一共 3 栏（任务名/紧急度/日期）");
         check(wiz.testStepText().contains(QString::fromUtf8("任务名")),
               "栏目标题显示「任务名」");
 
@@ -5043,15 +5003,9 @@ static int run() {
         check(wiz.testStepText().contains(QString::fromUtf8("紧急度")),
               "栏目标题显示「紧急度」");
 
-        wiz.testAdvance();      // 紧急度 -> 分组
-        check(wiz.testStage() == TaskDraft::StageCategory, "第 3 栏是「分组」");
+        wiz.testAdvance();      // 紧急度 -> 日期
+        check(wiz.testStage() == TaskDraft::StageDate, "第 3 栏是「日期」");
         check(wiz.testPageIndex() == 2, "第 3 栏显示第 3 页");
-        check(wiz.testStepText().contains(QString::fromUtf8("分组")),
-              "栏目标题显示「分组」");
-
-        wiz.testAdvance();      // 分组 -> 日期
-        check(wiz.testStage() == TaskDraft::StageDate, "第 4 栏是「日期」");
-        check(wiz.testPageIndex() == 3, "第 4 栏显示第 4 页");
         check(wiz.testStepText().contains(QString::fromUtf8("日期")),
               "栏目标题显示「日期」");
     }

@@ -23,7 +23,7 @@ class QPushButton;
 // Replaces the V0.0.2 inline wizard: every field is visible at once, including
 // the 备注 (details) box, and the deadline has minute precision. The keyboard
 // shortcuts survived the move: 1-4 selects priority while the title box has
-// focus, and Ctrl+1..4 selects the category.
+// focus.
 class TaskDialog : public QDialog {
     Q_OBJECT
 public:
@@ -50,7 +50,6 @@ private:
     void buildUi();
     void refreshChips();
     void setPriority(int priority);
-    void setCategory(int category);
     QString chipStyle(const QString& accent, bool active) const;
 
     TaskDraft m_draft;
@@ -62,7 +61,6 @@ private:
     QCheckBox *m_hasDeadline = nullptr;      // 取消勾选 = 无截止时间
     QDateTimeEdit *m_deadlineEdit = nullptr;
     QPushButton *m_priorityButtons[4] = {nullptr, nullptr, nullptr, nullptr};
-    QPushButton *m_categoryButtons[4] = {nullptr, nullptr, nullptr, nullptr};
     QLabel *m_errorLabel = nullptr;
 };
 
