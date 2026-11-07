@@ -697,27 +697,8 @@ void MainWindow::setupCategoryRow() {
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(4);
 
-    QLabel *label = new QLabel("分类：", m_categoryRow);
-    label->setStyleSheet(QString("QLabel { color: %1; font-size: 10px; }").arg(ThemeManager::hex(th.accent)));
-    layout->addWidget(label);
-
-    // 索引 0 是「全部」，1..4 对应 Other/Work/Study/Health。
-    QPushButton *all = new QPushButton("全部", m_categoryRow);
-    all->setFixedHeight(20);
-    all->setToolTip("显示所有分类");
-    connect(all, &QPushButton::clicked, this, [this]() { onCategoryFilterClicked(CategoryAll); });
-    m_categoryButtons[0] = all;
-    layout->addWidget(all);
-
-    for (int i = 0; i < 4; ++i) {
-        QPushButton *btn = new QPushButton(kCategoryNames[i], m_categoryRow);
-        btn->setFixedHeight(20);
-        btn->setToolTip(QString("只看「%1」").arg(kCategoryNames[i]));
-        connect(btn, &QPushButton::clicked, this, [this, i]() { onCategoryFilterClicked(i); });
-        m_categoryButtons[i + 1] = btn;
-        layout->addWidget(btn);
-    }
-
+    // F-006：分类（其他/工作/学习/健康）已经不是独立的一层了 —— 归属看列表。
+    // 这一行现在只剩右边的「排序」按钮；行本身保留，因为紧凑模式下要整行收掉。
     layout->addStretch();
 
     m_sortButton = new QPushButton("排序：创建时间", m_categoryRow);
