@@ -31,6 +31,8 @@ set(CYSC_CORE_SOURCES
     src/models/TaskDocument.h
     src/models/TaskModel.cpp
     src/models/TaskModel.h
+    src/models/TaskImporter.cpp
+    src/models/TaskImporter.h
     src/core/DatabaseManager.cpp
     src/core/DatabaseManager.h
     src/core/DocumentStore.cpp
@@ -59,6 +61,8 @@ set(CYSC_APP_SOURCES
     src/widgets/TaskVisualizer.h
     src/widgets/TaskWizardDialog.cpp
     src/widgets/TaskWizardDialog.h
+    src/widgets/TaskImportDialog.cpp
+    src/widgets/TaskImportDialog.h
 )
 
 qt_add_executable(cysc-taskbar

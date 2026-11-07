@@ -13,6 +13,8 @@
 #include "src/widgets/TaskVisualizer.h"
 #include "src/widgets/TaskSettingsDialog.h"
 #include "src/widgets/TaskWizardDialog.h"
+#include "src/models/TaskImporter.h"
+#include "src/widgets/TaskImportDialog.h"
 #include <algorithm>
 #include <QApplication>
 #include <QComboBox>
@@ -30,6 +32,7 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFormLayout>
@@ -580,6 +583,28 @@ void MainWindow::setupToolbar() {
     m_newButton->setAutoDefault(true);
     connect(m_newButton, &QPushButton::clicked, this, &MainWindow::onNewTask);
     layout->addWidget(m_newButton);
+
+    // 批量导入（F-005）：两条入口共用一个预览对话框。
+    m_importButton = new QPushButton("⇩ 导入", bar);
+    m_importButton->setObjectName("importButton");
+    m_importButton->setToolTip("批量导入：从文本文件读取，或粘贴一段文本");
+    m_importButton->setFixedHeight(26);
+    m_importButton->setStyleSheet(
+        QString("QPushButton { background-color: %1; color: %2; border: 1px solid %2; "
+                "padding: 0 8px; font-size: 11px; }"
+                "QPushButton:hover { background-color: %2; color: %3; }")
+        .arg(ThemeManager::hex(th.toolbarBg), ThemeManager::hex(th.accent),
+             ThemeManager::hex(th.onAccent)));
+    {
+        QMenu *importMenu = new QMenu(m_importButton);
+        QAction *fromFile = importMenu->addAction("从文件导入…");
+        QAction *fromPaste = importMenu->addAction("粘贴文本导入…");
+        fromFile->setToolTip("读取 .txt / .md，每行一个「键：值」");
+        connect(fromFile, &QAction::triggered, this, &MainWindow::onImportFromFile);
+        connect(fromPaste, &QAction::triggered, this, &MainWindow::onImportFromPaste);
+        m_importButton->setMenu(importMenu);
+    }
+    layout->addWidget(m_importButton);
 
     // 数据结构可视化（演示用）：随时打开看四种结构的内部状态。
     m_visualizeButton = new QPushButton("◈ 结构", bar);
@@ -2018,6 +2043,73 @@ void MainWindow::createTask(const Task& task) {
     setStatusMessage(QString("[完成] 已创建任务 #%1").arg(id));
 }
 
+// ------------------------------------------------------------------ 批量导入（F-005）
+
+void MainWindow::onImportFromFile() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, "选择要导入的文本文件", QString(),
+        "文本文件 (*.txt *.md *.text);;所有文件 (*)");
+    if (path.isEmpty()) return;
+
+    std::string text;
+    std::string error;
+    if (!TaskImporter::readTextFile(path.toStdString(), text, error)) {
+        QMessageBox::warning(this, "导入失败", QString::fromStdString(error));
+        setStatusMessage("导入失败：读取文件出错", true);
+        return;
+    }
+    runImport(QString::fromStdString(text), QFileInfo(path).fileName());
+}
+
+void MainWindow::onImportFromPaste() {
+    bool ok = false;
+    const QString text = QInputDialog::getMultiLineText(
+        this, "粘贴文本导入",
+        "把任务文本粘到这里。每行写作「键：值」，用「任务名：」分隔多个任务：",
+        QString(), &ok);
+    if (!ok || text.trimmed().isEmpty()) return;
+    runImport(text, "粘贴的文本");
+}
+
+void MainWindow::runImport(const QString& text, const QString& sourceLabel) {
+    // 解析 → 预览 → 写入。文件与粘贴共用这条路径，行为完全一致。
+    TaskImporter::ParseResult parsed = TaskImporter::parse(text.toStdString());
+    if (parsed.tasks.empty()) {
+        QMessageBox::information(this, "没有可导入的内容",
+                                 "没有从这段文本里解析出任务。\n\n"
+                                 "至少要有一行「任务名：xxx」，其余字段可选。");
+        setStatusMessage("导入：没有解析出任务", true);
+        return;
+    }
+
+    TaskImportDialog dialog(parsed, m_doc, sourceLabel, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        setStatusMessage("导入已取消");
+        return;
+    }
+
+    // applyTo 内部只在真正开始写入前压一次撤销快照 —— 整批算一步。
+    const std::vector<bool> flags = dialog.selectedFlags();
+    const TaskImporter::ApplyStats stats = TaskImporter::applyTo(m_doc, parsed.tasks, flags);
+    if (stats.added <= 0) {
+        setStatusMessage("导入：没有任务被写入", true);
+        return;
+    }
+
+    persistDocument();
+    m_expandedId = -1;
+    refreshList();
+
+    QString msg = QString("[完成] 导入 %1 条任务").arg(stats.added);
+    if (!stats.createdLists.empty()) {
+        QStringList names;
+        names.reserve(static_cast<int>(stats.createdLists.size()));
+        for (const std::string& n : stats.createdLists) names << QString::fromStdString(n);
+        msg += QString("，新建列表：%1").arg(names.join("、"));
+    }
+    if (stats.skipped > 0) msg += QString("，跳过 %1 条").arg(stats.skipped);
+    setStatusMessage(msg);
+}
 void MainWindow::onEditCurrentTask() {
     QListWidgetItem *item = m_taskList->currentItem();
     if (!item) {
@@ -5157,6 +5249,74 @@ static int run() {
 
         window->m_doc.removeTask(doneId);
         window->refreshList();
+    }
+
+    // ======================= 批量导入（F-005）=======================
+    //
+    // 放在最后：导入会改动文档里的任务数，前面那些「列表有 3 条」的断言
+    // 经不起中途插入数据。
+    {
+        const std::string text =
+            "任务名：导入测试A\n"
+            "步骤：第一步\n"
+            "步骤：第二步\n"
+            "标签：学习 复习\n"
+            "任务名：导入测试B\n"
+            "任务名：导入测试C\n"
+            "紧急度：4\n"
+            "截止时间：2026/12/31\n";
+        TaskImporter::ParseResult parsed = TaskImporter::parse(text);
+        check(static_cast<int>(parsed.tasks.size()) == 3, "导入：解析出 3 条任务");
+        check(parsed.countFatal() == 0, "导入：没有无法导入的条目");
+
+        // 自己造一条同名任务：前面的段落中途会删数据，不能依赖它们留下的东西。
+        const int dupId = window->m_doc.addTask([] {
+            Task t;
+            t.title = "导入测试B";
+            t.listId = 1;
+            return t;
+        }());
+        check(dupId >= 0, "导入：准备好一条同名任务");
+
+        TaskImportDialog dlg(parsed, window->m_doc, "自检文本", window);
+        const std::vector<bool> flags = dlg.selectedFlags();
+        check(static_cast<int>(flags.size()) == 3, "导入预览：勾选数量与条目一致");
+        check(flags.size() == 3 && flags[0] && !flags[1] && flags[2],
+              "导入预览：同名任务默认不勾、其余默认勾上");
+
+        const int before = static_cast<int>(window->m_doc.tasks().size());
+        const TaskImporter::ApplyStats st =
+            TaskImporter::applyTo(window->m_doc, parsed.tasks, flags);
+        check(st.added == 2, "导入：只写入勾选的 2 条");
+        check(static_cast<int>(window->m_doc.tasks().size()) == before + 2,
+              "导入：文档任务数增加 2");
+        check(window->m_doc.undoDepth() >= 1, "导入：整批只压一个撤销步骤");
+
+        // 步骤与标签确实落到了任务上
+        bool foundSteps = false;
+        bool foundTags = false;
+        bool foundDeadline = false;
+        for (const Task& t : window->m_doc.tasks()) {
+            if (t.title != "导入测试A") continue;
+            foundSteps = t.subtasks.size() == 2;
+            foundTags = t.tags.size() == 2;
+        }
+        for (const Task& t : window->m_doc.tasks()) {
+            if (t.title != "导入测试C") continue;
+            foundDeadline = t.deadline == "2026-12-31";
+        }
+        check(foundSteps, "导入：两个步骤写进子任务");
+        check(foundTags, "导入：两个标签写进任务");
+        check(foundDeadline, "导入：只写日期的截止时间存成 10 位");
+
+        // 撤销要能把整批一起退掉
+        const int afterImport = static_cast<int>(window->m_doc.tasks().size());
+        window->m_doc.undo();
+        check(static_cast<int>(window->m_doc.tasks().size()) == afterImport - 2,
+              "导入：一次撤销退掉整批 2 条");
+
+        window->refreshList();
+        QCoreApplication::processEvents();
     }
 
     window->hide();

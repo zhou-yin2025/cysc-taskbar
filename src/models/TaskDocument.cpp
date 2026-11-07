@@ -359,6 +359,18 @@ std::size_t TaskDocument::tagProbeLength(const std::string& tag) const {
 
 // ------------------------------------------------- 哈希表：重复标题检测
 
+std::string TaskDocument::normalizeTitleKey(const std::string &title) {
+    return normalizeTitle(title);
+}
+
+bool TaskDocument::hasTaskWithNormalizedTitle(const std::string &title) const {
+    const std::string key = normalizeTitle(title);
+    if (key.empty()) return false;
+    for (const Task &t : m_tasks) {
+        if (normalizeTitle(t.title) == key) return true;
+    }
+    return false;
+}
 std::vector<DuplicateGroup> TaskDocument::duplicateTitleGroups() const {
     HashTable<std::string, std::vector<int>> index;
     for (const Task& t : m_tasks) {

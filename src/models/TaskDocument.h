@@ -121,6 +121,11 @@ public:
 
     // ---- 哈希表：重复标题检测 ----
     std::vector<DuplicateGroup> duplicateTitleGroups() const;
+    // 标题归一化（去空格、转小写）。导入预览判重必须和内部用同一套规则，
+    // 否则「两处都说自己重/不重」，用户看到的结果会前后矛盾。
+    static std::string normalizeTitleKey(const std::string &title);
+    // 文档里是否已经有同名任务（归一化后比较）。
+    bool hasTaskWithNormalizedTitle(const std::string &title) const;
 
     // ---- Trie：搜索与补全 ----
     std::vector<std::string> titleCompletions(const std::string& prefix, int limit = 8) const;

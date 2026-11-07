@@ -108,11 +108,16 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    // 解析文本 → 预览 → 写入。文件导入与粘贴导入共用这一条路径。
+    void runImport(const QString& text, const QString& sourceLabel);
+
     int testVisibleCount() const { return m_taskList->count(); }
 
 private slots:
     void onNewTask();          // 逐栏向导（Enter / Ctrl+N）
     void onNewTaskFull();      // 完整表单（Ctrl+Shift+N）
+    void onImportFromFile();   // 从文本文件批量导入（F-005）
+    void onImportFromPaste();  // 粘贴文本批量导入（F-005）
     void onEditCurrentTask();
     void onSearchChanged(const QString& text);
     void onCategoryFilterClicked(int category);
@@ -187,6 +192,8 @@ private:
     QPushButton *m_newButton = nullptr;
     // 打开数据结构可视化面板。
     QPushButton *m_visualizeButton = nullptr;
+    // 批量导入（文件 / 粘贴）。
+    QPushButton *m_importButton = nullptr;
     QCheckBox *m_hideDone = nullptr;
 
     // 分类筛选行

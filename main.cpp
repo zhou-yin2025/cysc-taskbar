@@ -76,6 +76,28 @@ int main(int argc, char *argv[]) {
     QApplication::setOrganizationName("CYSC");
     QApplication::setApplicationVersion("0.1.0");
 
+    // 偏好设置存成 INI 文件，而不是默认的注册表。
+    //
+    // 为什么不用注册表：QSettings 在 Windows 上默认写 HKCU\Software\<组织>\<应用>，
+    // 在受限环境或 32/64 位注册表视图不一致时会出现「写入返回成功、读回却是空的」，
+    // 很难排查。INI 文件路径明确、可直接查看，也便于测试指向临时目录。
+    //
+    // ⚠ 这段必须放在下面的自检提前 return **之前**。--guitest 会在 if (selfTest)
+    //   处直接返回；如果设置晚于这里才初始化，自检里的 QSettings 就和正式运行
+    //   用的不是同一套存储（一个是注册表、一个是 INI），设置类断言会莫名其妙地失败。
+    //   顺序敏感，别往下挪。
+    {
+        QString settingsPath = qEnvironmentVariable("CYSC_SETTINGS_PATH");
+        if (settingsPath.isEmpty()) {
+            settingsPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+        }
+        if (!settingsPath.isEmpty()) {
+            QDir().mkpath(settingsPath);
+            QSettings::setDefaultFormat(QSettings::IniFormat);
+            QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsPath);
+        }
+    }
+
     // Base font for every widget. The first family that exists is used, so the
     // list degrades gracefully on machines without 微软雅黑。
     //
@@ -189,22 +211,6 @@ int main(int argc, char *argv[]) {
         qputenv("CYSC_FORCE_TRAY", "1");
     }
 
-    // 偏好设置（目前只有「是否置顶」）存成 INI 文件，而不是默认的注册表。
-    //
-    // 为什么不用注册表：QSettings 在 Windows 上默认写 HKCU\Software\<组织>\<应用>，
-    // 在受限环境或 32/64 位注册表视图不一致时会出现「写入返回成功、读回却是空的」，
-    // 很难排查。INI 文件路径明确、可直接查看，也便于测试指向临时目录。
-    {
-        QString settingsPath = qEnvironmentVariable("CYSC_SETTINGS_PATH");
-        if (settingsPath.isEmpty()) {
-            settingsPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-        }
-        if (!settingsPath.isEmpty()) {
-            QDir().mkpath(settingsPath);
-            QSettings::setDefaultFormat(QSettings::IniFormat);
-            QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsPath);
-        }
-    }
 
     // 便于人工检查/截图：直接打开「选择列表颜色」对话框。
     if (args.contains("--color-dialog")) {

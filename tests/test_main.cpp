@@ -14,6 +14,7 @@
 #include "src/ds/Vector.h"
 #include "src/models/TaskDraft.h"
 #include "src/models/TaskDocument.h"
+#include "src/models/TaskImporter.h"
 #include "src/models/TaskModel.h"
 
 #include <QCoreApplication>
@@ -1705,6 +1706,251 @@ void testTaskDocument() {
     }
 }
 
+// ---------------------------------------------------------------- TaskImporter
+// 导入解析器：格式宽容、错误可见、日期变体、提醒边界、批量写入只压一次撤销。
+void testTaskImporter() {
+    using namespace TaskImporter;
+    testutil::section("TaskImporter");
+
+    // --- 用户给的原例：行首杂字 "b"、步骤编号 "1"/"二" 混用
+    {
+        const std::string text =
+            "任务名：阅读\n"
+            "b步骤1：党章\n"
+            "步骤二：海底两万里\n"
+            "截止时间：2026/12/30\n"
+            "紧急度：4\n";
+        ParseResult r = parse(text);
+        testutil::expect(r.tasks.size() == 1, "原例解析出 1 条任务");
+        const ImportTask &t = r.tasks.at(0);
+        testutil::expect(t.title == "阅读", "标题是「阅读」");
+        testutil::expect(t.steps.size() == 2, "两个步骤都被认出（容忍行首杂字与中文编号）");
+        testutil::expect(!t.steps.empty() && t.steps[0] == "党章", "第 1 个步骤是「党章」");
+        testutil::expect(t.steps.size() == 2 && t.steps[1] == "海底两万里",
+                         "第 2 个步骤是「海底两万里」");
+        testutil::expect(t.deadline == "2026-12-30", "只写日期 → 存 10 位日期（方案 1）");
+        testutil::expect(t.priority == 3, "紧急度 4 映射到内部 3");
+        testutil::expect(!t.fatal && !t.hasWarnings(), "原例没有警告");
+    }
+
+    // --- 一个文件多条任务：出现「任务名」就是新任务
+    {
+        const std::string text =
+            "任务名：写报告\n"
+            "截止时间：2026-12-30 18:00\n"
+            "任务名：复习\n"
+            "步骤：区间和\n"
+            "任务名：跑步\n";
+        ParseResult r = parse(text);
+        testutil::expect(r.tasks.size() == 3, "三个「任务名」→ 三条任务");
+        testutil::expect(r.tasks.size() == 3 && r.tasks[1].title == "复习", "第二条标题正确");
+        testutil::expect(r.tasks.size() == 3 && r.tasks[0].deadline == "2026-12-30 18:00",
+                         "带时间的截止时间原样保留");
+        testutil::expect(r.tasks.size() == 3 && r.tasks[0].steps.empty(),
+                         "第一条没有步骤（不会串到第二条）");
+    }
+
+    // --- 未知字段并入备注，并且有警告
+    {
+        const std::string text =
+            "任务名：整理\n"
+            "地点：图书馆\n"
+            "备注：带上笔记本\n";
+        ParseResult r = parse(text);
+        const ImportTask &t = r.tasks.at(0);
+        testutil::expect(t.details.find("地点：图书馆") != std::string::npos,
+                         "未知字段「地点」被并入备注");
+        testutil::expect(t.details.find("带上笔记本") != std::string::npos,
+                         "原有备注与新并入的内容共存");
+        testutil::expect(t.hasWarnings(), "未知字段产生警告（错误要看得见）");
+    }
+
+    // --- 字段出现在「任务名」之前：全局警告并忽略
+    {
+        const std::string text =
+            "截止时间：2026-12-30\n"
+            "任务名：写报告\n";
+        ParseResult r = parse(text);
+        testutil::expect(r.warnings.size() == 1, "「任务名」之前的字段产生一条全局警告");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].deadline.empty(),
+                         "被忽略的截止时间没有落到任务上");
+    }
+
+    // --- 日期变体
+    {
+        struct Case {
+            const char *in;
+            const char *want;
+        };
+        const Case cases[] = {
+            {"2026年12月30日", "2026-12-30"},
+            {"2026.12.30", "2026-12-30"},
+            {"2026-12-30 18:00", "2026-12-30 18:00"},
+            {"2026/12/30 18点30分", "2026-12-30 18:30"},
+            {"2026-12-30 18:30:00", "2026-12-30 18:30"},
+        };
+        for (const Case &c : cases) {
+            const std::string text = std::string("任务名：x\n截止时间：") + c.in + "\n";
+            ParseResult r = parse(text);
+            const std::string got = r.tasks.empty() ? std::string("<空>") : r.tasks[0].deadline;
+            testutil::expect(got == c.want,
+                             QString("日期变体「%1」→ %2（实际 %3）")
+                                 .arg(QString::fromUtf8(c.in))
+                                 .arg(QString::fromUtf8(c.want))
+                                 .arg(QString::fromStdString(got)));
+        }
+    }
+
+    // --- 坏日期：警告 + 不写入
+    {
+        ParseResult r = parse("任务名：x\n截止时间：明天下午\n");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].deadline.empty(),
+                         "无法解析的日期被丢弃");
+        testutil::expect(r.tasks.at(0).hasWarnings(), "坏日期留下警告");
+    }
+
+    // --- 紧急度：中文与数字
+    {
+        const char *inputs[] = {"1", "2", "3", "4", "低", "中", "高", "紧急", "二"};
+        const int wants[] = {0, 1, 2, 3, 0, 1, 2, 3, 1};
+        for (int i = 0; i < 9; ++i) {
+            ParseResult r =
+                parse(std::string("任务名：x\n紧急度：") + inputs[i] + "\n");
+            const int got = r.tasks.empty() ? -1 : r.tasks[0].priority;
+            testutil::expect(got == wants[i],
+                             QString("紧急度「%1」→ %2（实际 %3）")
+                                 .arg(QString::fromUtf8(inputs[i]))
+                                 .arg(wants[i])
+                                 .arg(got));
+        }
+    }
+
+    // --- 提醒：只写日期补 09:00 并给警告；带时间原样
+    {
+        ParseResult r = parse("任务名：x\n截止时间：2026-12-30\n提醒：2026-12-29\n");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].reminder == "2026-12-29 09:00",
+                         "提醒只写日期 → 当天 09:00");
+        testutil::expect(r.tasks.at(0).hasWarnings(), "补默认时间会提示用户");
+
+        ParseResult r2 = parse("任务名：x\n截止时间：2026-12-30 18:00\n提醒：2026-12-29 20:00\n");
+        testutil::expect(r2.tasks.size() == 1 && r2.tasks[0].reminder == "2026-12-29 20:00",
+                         "带时间的提醒原样保留");
+    }
+
+    // --- 提醒晚于截止：警告但仍保留
+    {
+        ParseResult r = parse("任务名：x\n截止时间：2026-12-30 09:00\n提醒：2026-12-30 20:00\n");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].reminder == "2026-12-30 20:00",
+                         "提醒晚于截止时仍然保留");
+        testutil::expect(r.tasks.at(0).hasWarnings(), "提醒晚于截止会产生警告");
+    }
+
+    // --- 标签分隔符
+    {
+        ParseResult r = parse("任务名：x\n标签：学习 复习，答辩、论文 #课程设计\n");
+        const std::vector<std::string> want = {"学习", "复习", "答辩", "论文", "课程设计"};
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].tags == want,
+                         "标签按空格/逗号/顿号/# 都切得开");
+    }
+
+    // --- 分类与列表
+    {
+        ParseResult r = parse("任务名：x\n分类：学习\n列表：期末作业\n");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].categoryId == 2, "分类「学习」→ 2");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].listName == "期末作业",
+                         "列表名被保留");
+        ParseResult r2 = parse("任务名：x\n分类：不明\n");
+        testutil::expect(r2.tasks.size() == 1 && r2.tasks[0].categoryId == 0,
+                         "分类认不出时落到「其他」");
+        testutil::expect(r2.tasks.at(0).hasWarnings(), "分类认不出时有警告");
+    }
+
+    // --- 注释与缺冒号的行
+    {
+        ParseResult r = parse("# 这是注释\n// 这也是注释\n任务名：x\n这一行没有冒号\n");
+        testutil::expect(r.tasks.size() == 1, "注释行不产生任务");
+        testutil::expect(r.warnings.size() == 1, "缺「键：值」的行产生一条全局警告");
+    }
+
+    // --- 没有任务名：fatal
+    {
+        ParseResult r = parse("备注：孤立内容\n");
+        testutil::expect(r.tasks.size() == 1 && r.tasks[0].fatal,
+                         "只有字段没有任务名 → 标记为无法导入");
+        testutil::expect(r.countFatal() == 1, "countFatal 统计正确");
+    }
+
+    // --- 空文本
+    {
+        ParseResult r = parse("");
+        testutil::expect(r.tasks.empty(), "空文本不产生任务");
+    }
+
+    // --- applyTo：自动建列表、只压一次撤销、未勾选跳过、过期提醒不写
+    {
+        TaskDocument doc;
+        doc.addList("工作", "#FF007F");
+        ParseResult r = parse(
+            "任务名：任务A\n列表：期末作业\n提醒：2020-01-01 09:00\n"
+            "任务名：任务B\n列表：期末作业\n"
+            "任务名：任务C\n");
+        const int before = static_cast<int>(doc.tasks().size());
+        std::vector<bool> selected = {true, true, false};
+        ApplyStats st = applyTo(doc, r.tasks, selected);
+        testutil::expect(st.added == 2, "选中 2 条 → 写入 2 条");
+        testutil::expect(st.skipped == 1, "未选中的 1 条被跳过");
+        testutil::expect(doc.tasks().size() == before + 2, "文档里确实多了 2 条任务");
+        testutil::expect(st.createdLists.size() == 1 && st.createdLists[0] == "期末作业",
+                         "「期末作业」被自动新建一次（同批只建一次）");
+        testutil::expect(doc.canUndo(), "批量导入留下了一个撤销步骤");
+        testutil::expect(doc.undoDepth() == 1, "整批导入只压一次快照（不是每条一次）");
+        if (doc.tasks().size() >= 2) {
+            const Task &a = doc.tasks()[doc.tasks().size() - 2];
+            testutil::expect(a.reminder.empty(), "已过去的提醒不写入");
+            testutil::expect(a.subtasks.empty(), "没有步骤的任务不产生子任务");
+        }
+    }
+
+    // --- readTextFile：UTF-8 带/不带 BOM
+    {
+        const std::string path = testutil::tempDbPath("import_utf8.txt");
+        {
+            QFile f(QString::fromStdString(path));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                f.write("\xEF\xBB\xBF");
+                f.write("任务名：阅读\n");
+                f.close();
+            }
+        }
+        std::string text;
+        std::string err;
+        const bool ok = readTextFile(path, text, err);
+        testutil::expect(ok, "UTF-8（带 BOM）能读");
+        testutil::expect(text.find("\xEF\xBB\xBF") == std::string::npos, "BOM 已被剥掉");
+        testutil::expect(text.find("任务名") != std::string::npos, "正文内容正确");
+    }
+
+    // --- readTextFile：GBK（Windows 记事本默认编码）
+#ifdef Q_OS_WIN
+    {
+        const std::string path = testutil::tempDbPath("import_gbk.txt");
+        const QByteArray gbk = QString("任务名：阅读\n").toLocal8Bit();
+        {
+            QFile f(QString::fromStdString(path));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                f.write(gbk);
+                f.close();
+            }
+        }
+        std::string text;
+        std::string err;
+        const bool ok = readTextFile(path, text, err);
+        testutil::expect(ok, "GBK 文件能读");
+        testutil::expect(text.find("任务名") != std::string::npos, "GBK 内容被正确转成 UTF-8");
+    }
+#endif
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -1735,6 +1981,7 @@ int main(int argc, char *argv[]) {
     if (wants("UnionFind")) testUnionFind();
     if (wants("TaskDocument")) testTaskDocument();
     if (wants("DocumentStore")) docstore_test::run();
+    if (wants("TaskImporter")) testTaskImporter();
     if (wants("TaskDraft")) testTaskDraft();
     if (wants("TaskModel")) { testModelInMemory(); testModelPersistence(); }
     if (wants("StoragePaths")) testStoragePaths();
