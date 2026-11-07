@@ -6,6 +6,12 @@
 #include <QAction>
 #include <QInputDialog>
 #include <QFrame>
+#include <QFile>
+#include <QTextStream>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
@@ -161,6 +167,13 @@ void TaskSidebar::addSmartRow(SmartView view, const QString& text, const QString
     entry.badge = badge;
     m_smartButtons.push_back(entry);
 
+    // 只有「我的一天」和「重要」能接收任务：拖过去就是打勾。
+    // 其他视图（全部/已完成/计划内）语义上不接受「改归属」。
+    if (view == SmartView::MyDay || view == SmartView::Important) {
+        registerDropTarget(row, 0, static_cast<int>(view));
+        registerDropTarget(button, 0, static_cast<int>(view));
+    }
+
     connect(button, &QPushButton::clicked, this, [this, view]() {
         m_smartViewSelected = true;
         m_view = view;
@@ -173,6 +186,19 @@ void TaskSidebar::addSmartRow(SmartView view, const QString& text, const QString
 // ------------------------------------------------------------------ 列表区
 
 void TaskSidebar::rebuildListRows() {
+    // 列表行每次都是新建的，旧的控件马上就被 deleteLater 了。
+    // 不清掉的话 m_dropTargets 里会留着**已经销毁**的指针，
+    // 拖放事件就送到野指针上去了（表现为「拖了没反应」，严重时崩溃）。
+    m_dropTargets.clear();
+    // 智能视图的行是常驻的，重建后要重新登记回来
+    for (const SmartRow &entry : m_smartButtons) {
+        if (!entry.button) continue;
+        if (entry.view == SmartView::MyDay || entry.view == SmartView::Important) {
+            registerDropTarget(entry.button->parentWidget(), 0,
+                               static_cast<int>(entry.view));
+            registerDropTarget(entry.button, 0, static_cast<int>(entry.view));
+        }
+    }
     // 清掉旧行（保留末尾的 stretch）
     for (const ListRow& row : m_listRows) {
         m_listLayout->removeWidget(row.container);
@@ -219,6 +245,7 @@ void TaskSidebar::rebuildListRows() {
         }
 
         QWidget *container = new QWidget(m_listContainer);
+        registerDropTarget(container, 1, list.id);
         QHBoxLayout *layout = new QHBoxLayout(container);
         // 组内列表缩进一格，视觉上归到组标题下
         layout->setContentsMargins(grouped ? 14 : 0, 0, 4, 0);
@@ -379,4 +406,78 @@ void TaskSidebar::selectList(int listId) {
     m_listId = listId;
     updateHighlight();
     emit listChosen(listId);
+}
+
+// ------------------------------------------------------------------ 拖放目标
+
+void TaskSidebar::registerDropTarget(QWidget *widget, int kind, int id) {
+    if (!widget) return;
+    // 同一个 (kind,id) 只保留最新的控件，老的（可能已销毁）删掉
+    for (auto it = m_dropTargets.begin(); it != m_dropTargets.end();) {
+        if (it.value().first == kind && it.value().second == id) {
+            it = m_dropTargets.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    widget->setAcceptDrops(true);
+    widget->installEventFilter(this);
+    m_dropTargets.insert(widget, qMakePair(kind, id));
+}
+
+bool TaskSidebar::eventFilter(QObject *watched, QEvent *event) {
+    const auto it = m_dropTargets.constFind(watched);
+    if (it == m_dropTargets.constEnd()) {
+        return QWidget::eventFilter(watched, event);
+    }
+
+    switch (event->type()) {
+        case QEvent::DragEnter:
+        case QEvent::DragMove: {
+            auto *drag = static_cast<QDragMoveEvent*>(event);
+            if (!drag->mimeData()->hasFormat(TaskMime::kTaskId)) break;
+            drag->setDropAction(Qt::MoveAction);
+            drag->accept();
+            // 高亮一下当前落点，用户能看出会落到哪一行
+            if (auto *w = qobject_cast<QWidget*>(watched)) {
+                w->setStyleSheet(
+                    QString("border: 1px dashed %1; border-radius: 3px;")
+                        .arg(ThemeManager::hex(ThemeManager::current().accent)));
+            }
+            return true;
+        }
+        case QEvent::DragLeave: {
+            if (auto *w = qobject_cast<QWidget*>(watched)) {
+                w->setStyleSheet(QString());
+            }
+            return true;
+        }
+        case QEvent::Drop: {
+            auto *drop = static_cast<QDropEvent*>(event);
+            if (!drop->mimeData()->hasFormat(TaskMime::kTaskId)) break;
+            if (auto *w = qobject_cast<QWidget*>(watched)) {
+                w->setStyleSheet(QString());
+            }
+            const QByteArray raw = drop->mimeData()->data(TaskMime::kTaskId);
+            bool ok = false;
+            const int taskId = QString::fromUtf8(raw).toInt(&ok);
+            if (!ok || taskId < 0) break;
+            drop->setDropAction(Qt::MoveAction);
+            drop->accept();
+            emit taskDropRequested(it.value().first, it.value().second, taskId);
+            return true;
+        }
+        default:
+            break;
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+QWidget *TaskSidebar::testDropTarget(int kind, int id) const {
+    for (auto it = m_dropTargets.constBegin(); it != m_dropTargets.constEnd(); ++it) {
+        if (it.value().first == kind && it.value().second == id) {
+            return qobject_cast<QWidget*>(it.key());
+        }
+    }
+    return nullptr;
 }

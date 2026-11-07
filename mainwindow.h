@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <QListWidget>
+#include <QMimeData>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QLabel>
@@ -34,6 +35,12 @@ class TaskListWidget : public QListWidget {
 public:
     explicit TaskListWidget(QWidget *parent = nullptr) : QListWidget(parent) {}
 
+    // F-007：拖拽能否开始。计划内分桶、紧凑模式下不允许拖（会打乱分桶/超出窗口）。
+    void setDragAllowed(bool allowed) {
+        m_dragAllowed = allowed;
+        setDragEnabled(allowed);
+    }
+
 signals:
     // 行已经被移到新位置后发出。
     void rowMoved();
@@ -43,6 +50,26 @@ protected:
         QListWidget::dropEvent(event);
         emit rowMoved();
     }
+
+    // 拖拽时把被拖任务 id 一并以自有 MIME 类型放进去 —— 侧栏靠它认人。
+    QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override {
+        QMimeData *data = QListWidget::mimeData(items);
+        if (!m_dragAllowed) {
+            delete data;
+            return nullptr;
+        }
+        if (!data || items.isEmpty()) return data;
+        const int id = items.first()->data(Qt::UserRole).toInt();
+        if (id < 0) {          // 分组头不是任务，不给拖
+            delete data;
+            return nullptr;
+        }
+        data->setData(TaskMime::kTaskId, QByteArray::number(id));
+        return data;
+    }
+
+private:
+    bool m_dragAllowed = true;
 };
 
 class MainWindow : public QWidget {
@@ -352,6 +379,8 @@ private:
     void createTask(const Task& task);
     // F-007：新建任务置顶 —— 把 manualOrder 设成当前最小值减一
     Task withTopOrder(Task task) const;
+    // F-007：任务被拖到侧栏某项上（kind: 0 智能视图 / 1 列表）
+    void onTaskDropped(int kind, int targetId, int taskId);
     // 双击：按 待办 → 进行中 → 已完成 → 待办 推进。
     void advanceStatus(int id);
     // 延迟到事件循环下一轮再推进状态。双击必须用这个：advanceStatus 会重建

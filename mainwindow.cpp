@@ -470,6 +470,7 @@ MainWindow::MainWindow(QWidget *parent)
         setStatusMessage(QString("列表：%1")
                              .arg(list ? QString::fromStdString(list->name) : QString()));
     });
+    connect(m_sidebar, &TaskSidebar::taskDropRequested, this, &MainWindow::onTaskDropped);
     connect(m_sidebar, &TaskSidebar::addListRequested, this, &MainWindow::onAddList);
     connect(m_sidebar, &TaskSidebar::groupListsRequested, this, &MainWindow::onGroupLists);
     connect(m_sidebar, &TaskSidebar::renameListRequested, this, &MainWindow::onRenameList);
@@ -1670,6 +1671,10 @@ void MainWindow::refreshList() {
     m_buildingList = false;
 
     // 给「进行中」的行打开流动光效，并确保动画在跑
+    // F-007：计划内按时间分桶、以及紧凑模式下不允许拖拽 —— 拖了也没法落位，
+    // 不如直接关掉，免得用户拖一半发现放不下。
+    m_taskList->setDragAllowed(!groupByBucket && !m_compact);
+
     applyExpansion();
     ensureGlowRunning();
 
@@ -2050,6 +2055,45 @@ void MainWindow::createTask(const Task& task) {
     m_expandedId = -1;
     refreshList();
     setStatusMessage(QString("[完成] 已创建任务 #%1").arg(id));
+}
+
+void MainWindow::onTaskDropped(int kind, int targetId, int taskId) {
+    const Task *current = m_doc.findTask(taskId);
+    if (!current) return;
+
+    Task edited = *current;
+    QString what;
+    if (kind == 0) {
+        // 智能视图：只有「我的一天」和「重要」有意义，拖过去就是打勾。
+        const SmartView view = static_cast<SmartView>(targetId);
+        if (view == SmartView::MyDay) {
+            if (edited.inMyDay) return;
+            edited.inMyDay = true;
+            what = "加入「我的一天」";
+        } else if (view == SmartView::Important) {
+            if (edited.starred) return;
+            edited.starred = true;
+            what = "标记为「重要」";
+        } else {
+            return;
+        }
+    } else {
+        // 列表：改归属。拖到当前所在的列表上什么也不做。
+        if (edited.listId == targetId) return;
+        edited.listId = targetId;
+        const TaskList *list = m_doc.findList(targetId);
+        what = QString("移到列表「%1」")
+                   .arg(list ? QString::fromStdString(list->name) : QString("?"));
+    }
+
+    // updateTask 自带撤销快照，不用再 beginUndo。
+    if (!m_doc.updateTask(edited)) {
+        setStatusMessage("拖拽失败：写入出错", true);
+        return;
+    }
+    persistDocument();
+    refreshList();
+    setStatusMessage(QString("[完成] 已把任务 %1 %2").arg(taskId).arg(what));
 }
 
 Task MainWindow::withTopOrder(Task task) const {
@@ -5391,6 +5435,85 @@ static int run() {
         window->m_smartView = SmartView::All;
         window->m_sortMode = before;
         window->refreshList();
+    }
+
+    // ======================= 跨视图拖拽（F-007）=======================
+    {
+        // 造一条待拖的任务，并确保至少有两个列表
+        Task draggable;
+        draggable.title = "拖拽测试任务";
+        draggable.listId = 1;
+        const int dragId = window->m_doc.addTask(draggable);
+        check(dragId >= 0, "拖拽：准备好一条任务");
+
+        const std::vector<TaskList> allLists = window->m_doc.lists();
+        int otherList = -1;
+        for (const TaskList &l : allLists) {
+            if (l.id != window->m_doc.findTask(dragId)->listId) { otherList = l.id; break; }
+        }
+        check(otherList >= 0, "拖拽：存在另一个可以落下的列表");
+
+        // 侧栏给这个列表注册了拖放目标
+        QWidget *listTarget = window->m_sidebar->testDropTarget(1, otherList);
+        check(listTarget != nullptr && listTarget->acceptDrops(),
+              "侧栏的列表行接收拖放");
+
+        if (listTarget && otherList >= 0) {
+            // 真投递一个 drop 事件，走完整路径：事件过滤器 -> 信号 -> 主窗口
+            QMimeData *mime = new QMimeData;
+            mime->setData(TaskMime::kTaskId, QByteArray::number(dragId));
+            // 真实拖放是 DragEnter -> DragMove -> Drop 三步，这里照同样顺序投递
+            QDragEnterEvent enter(QPoint(4, 4), Qt::MoveAction, mime, Qt::LeftButton,
+                                  Qt::NoModifier);
+            QApplication::sendEvent(listTarget, &enter);
+            QDropEvent drop(QPointF(4, 4), Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(listTarget, &drop);
+            delete mime;
+
+            const Task *moved = window->m_doc.findTask(dragId);
+            check(moved && moved->listId == otherList, "拖到列表：归属改了");
+            check(window->m_doc.findTask(dragId)->title == "拖拽测试任务",
+                  "拖到列表：任务本身没丢");
+        }
+
+        // 拖到「我的一天」/「重要」
+        QWidget *myDayTarget = window->m_sidebar->testDropTarget(0, static_cast<int>(SmartView::MyDay));
+        QWidget *importantTarget = window->m_sidebar->testDropTarget(0, static_cast<int>(SmartView::Important));
+        check(myDayTarget != nullptr, "「我的一天」接收拖放");
+        check(importantTarget != nullptr, "「重要」接收拖放");
+        if (myDayTarget) {
+            QMimeData *mime = new QMimeData;
+            mime->setData(TaskMime::kTaskId, QByteArray::number(dragId));
+            QDragEnterEvent enter(QPoint(4, 4), Qt::MoveAction, mime, Qt::LeftButton,
+                                  Qt::NoModifier);
+            QApplication::sendEvent(myDayTarget, &enter);
+            QDropEvent drop(QPointF(4, 4), Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(myDayTarget, &drop);
+            delete mime;
+            check(window->m_doc.findTask(dragId) && window->m_doc.findTask(dragId)->inMyDay,
+                  "拖到「我的一天」：打上我的一天");
+        }
+        if (importantTarget) {
+            QMimeData *mime = new QMimeData;
+            mime->setData(TaskMime::kTaskId, QByteArray::number(dragId));
+            QDragEnterEvent enter(QPoint(4, 4), Qt::MoveAction, mime, Qt::LeftButton,
+                                  Qt::NoModifier);
+            QApplication::sendEvent(importantTarget, &enter);
+            QDropEvent drop(QPointF(4, 4), Qt::MoveAction, mime, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(importantTarget, &drop);
+            delete mime;
+            check(window->m_doc.findTask(dragId) && window->m_doc.findTask(dragId)->starred,
+                  "拖到「重要」：标了星标");
+        }
+
+        // 计划内视图里不允许拖拽（分桶会把顺序打乱）
+        window->m_smartView = SmartView::Planned;
+        window->m_useSmartView = true;
+        window->refreshList();
+        check(!window->m_taskList->dragEnabled(), "计划内视图禁止拖拽");
+        window->m_smartView = SmartView::All;
+        window->refreshList();
+        check(window->m_taskList->dragEnabled(), "回到全部视图又能拖了");
     }
 
     // ======================= 批量导入（F-005）=======================

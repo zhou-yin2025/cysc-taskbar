@@ -20,6 +20,12 @@
 
 class QLabel;
 
+// 拖拽任务的 MIME 类型（F-007 跨视图拖拽）。
+// 侧栏认这个类型才接收放下，避免把外部的任意拖拽当成任务。
+namespace TaskMime {
+inline const char *kTaskId = "application/x-cysc-task-id";
+} // namespace TaskMime
+
 // 左侧栏（对应 Microsoft To Do 的列表栏）。
 //
 // 结构：
@@ -54,6 +60,8 @@ public:
     bool smartViewSelected() const { return m_smartViewSelected; }
     int selectedListId() const { return m_listId; }
     int groupHeaderCount() const { return static_cast<int>(m_groupHeaders.size()); }
+    // 界面自检用：拿到某个 (kind,id) 对应的拖放目标控件，便于精确投递拖放事件。
+    QWidget *testDropTarget(int kind, int id) const;
 
 signals:
     void smartViewChosen(SmartView view);
@@ -65,6 +73,9 @@ signals:
     void renameListRequested(int listId);
     void deleteListRequested(int listId);
     void changeListColorRequested(int listId);
+    // 有任务被拖到侧栏某项上。kind: 0 = 智能视图，1 = 列表。
+    // 侧栏只报告「落到哪」，改模型/落库仍由主窗口负责。
+    void taskDropRequested(int kind, int targetId, int taskId);
     // 把列表移出它所在的分组（解散该列表的分组关系）。
     void removeListFromGroupRequested(int listId);
 
@@ -82,6 +93,13 @@ private:
     };
 
     QPushButton *makeSmartButton(const QString& text, const QString& color);
+    // 把一个行控件登记成拖放目标（kind: 0 智能视图 / 1 列表）
+    void registerDropTarget(QWidget *widget, int kind, int id);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
+private:
     void addSmartRow(SmartView view, const QString& text, const QString& color);
     void rebuildListRows();
     void updateHighlight();
@@ -101,6 +119,8 @@ private:
     std::vector<ListRow> m_listRows;
     // 分组标题行（同组列表前的「分组 N」标签），refresh 时一起重建。
     std::vector<QWidget*> m_groupHeaders;
+    // 控件 -> (kind, id)：拖到哪个控件上就知道要落到哪个视图/列表
+    QHash<QObject*, QPair<int, int>> m_dropTargets;
 
     bool m_smartViewSelected = true;
     SmartView m_view = SmartView::MyDay;
