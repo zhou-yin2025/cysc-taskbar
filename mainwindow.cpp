@@ -539,6 +539,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_taskList->setDragEnabled(true);
     m_taskList->setAcceptDrops(true);
     m_taskList->setDropIndicatorShown(true);
+    // 按像素滚动。默认其实是 **ScrollPerItem**（滚动条的值是"第几行"），
+    // 而下面的滚轮处理按行高做像素加减 —— 单位不同，条数一多就会一次跳到底
+    // （40 条以内看着"刚好"，其实是 0+56 落在合法范围内造成的假象）。
+    m_taskList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_taskList->setDragDropMode(QAbstractItemView::InternalMove);
     m_taskList->setDefaultDropAction(Qt::MoveAction);
     // 单元格是自绘 widget，QListWidget 的 itemClicked / itemDoubleClicked 在这种
@@ -2066,6 +2070,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
                 if (step <= 0 && m_taskList->count() > 0) step = m_taskList->sizeHintForRow(0);
                 if (step <= 0) step = 28;
 
+                // 上限：一次最多滚半屏。展开行可能有 300+px 高，
+                // 不封顶的话滚一格就等于翻好几屏。
+                step = qMin(step, qMax(20, m_taskList->viewport()->height() / 2));
+
                 const int direction = wheel->angleDelta().y() > 0 ? -1 : 1;
                 bar->setValue(bar->value() + direction * step);
                 wheel->accept();
@@ -3499,11 +3507,30 @@ void MainWindow::applyThemeToWidgets() {
 // （m_resizingByUser 由 applyResize 置位），避免程序自己 resize 时误触发。
 void MainWindow::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
-    if (m_compact || !m_resizingByUser) return;
-    if (width() <= kAutoCompactWidth) {
-        m_compact = true;
-        applyCompactMode();
-        setStatusMessage("窗口已收窄，自动进入紧凑模式（点 ⊡ 恢复完整窗口）");
+    if (!m_resizingByUser) return;
+
+    // 收窄 -> 自动进入紧凑
+    if (!m_compact) {
+        if (width() <= kAutoCompactWidth) {
+            m_compact = true;
+            m_compactAuto = true;
+            applyCompactMode();
+            setStatusMessage("窗口已收窄，自动进入紧凑模式（拉宽或点 ⊡ 恢复）");
+        }
+        return;
+    }
+
+    // 拉宽 -> 自动退出紧凑。
+    //
+    // 只有"自动进入"的才自动退出：用户手动点 ⊡ 进去的，是他自己的选择，
+    // 不该因为顺手拉了下窗口就被弹出来。留 80px 余量避免在阈值附近抖。
+    if (m_compactAuto && width() >= kAutoCompactWidth + 80) {
+        m_compact = false;
+        m_compactAuto = false;
+        // 不还原旧几何：用户正在拖的这一下就是他想要的宽度，
+        // 还原成"进紧凑之前的尺寸"会把窗口抢回去。
+        applyCompactMode(false);
+        setStatusMessage("窗口已拉宽，自动退出紧凑模式");
     }
 }
 
@@ -3637,7 +3664,10 @@ void MainWindow::snapToTopRight() {
     move(qMax(avail.left(), x), y);
 }
 
-void MainWindow::toggleCompactMode() {    m_compact = !m_compact;
+void MainWindow::toggleCompactMode() {
+    m_compact = !m_compact;
+    // 手动切换之后就不再是"自动进入"的状态了：之后拉宽也不该被自动弹出来
+    m_compactAuto = false;
     applyCompactMode();
 
     QSettings settings;
@@ -3645,7 +3675,7 @@ void MainWindow::toggleCompactMode() {    m_compact = !m_compact;
     settings.sync();
 }
 
-void MainWindow::applyCompactMode() {
+void MainWindow::applyCompactMode(bool restoreGeometry) {
     const bool mini = m_compact;
 
     // 侧栏、完整新建按钮、分类筛选行、「建议」区在紧凑模式下都没有意义
@@ -3677,7 +3707,11 @@ void MainWindow::applyCompactMode() {
     } else {
         // 先撑回最小尺寸再还原几何，避免被紧凑模式的最小尺寸夹住
         setMinimumSize(480, 420);
-        if (m_geometryBeforeCompact.isValid()) setGeometry(m_geometryBeforeCompact);
+        // 只有「手动点 ⊡」才还原进紧凑之前的几何；自动退出时用户正在拖窗口，
+        // 还原会把宽度抢回去，体验上就是"拉宽了又被弹回小窗"。
+        if (restoreGeometry && m_geometryBeforeCompact.isValid()) {
+            setGeometry(m_geometryBeforeCompact);
+        }
         m_expandedId = m_expandedBeforeCompact;
         applyExpansion();
         setStatusMessage("已恢复完整窗口");
@@ -4000,6 +4034,17 @@ static int run() {
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        qEnvironmentVariable("CYSC_TEST_TMPDIR", QDir::tempPath()));
+
+    // 每次都从**干净的偏好**开始。
+    //
+    // 这个 INI 在 PYTHON 目录里跨运行保留，上一次跑完可能留下
+    // compact=true / theme=rose 之类的值 —— 于是下一次的"起点"就不是默认状态，
+    // 断言会莫名其妙地挂（实机排查时踩过：一启动就是紧凑模式，拖拽全废）。
+    {
+        QSettings clean;
+        clean.clear();
+        clean.sync();
+    }
 
     // 必须在构造窗口之前指定数据库（构造函数会加载已有任务）；文件名带
     // 时间戳，保证每次运行都是全新的库，不会被上一次的数据干扰。
@@ -5175,9 +5220,10 @@ static int run() {
 
     // ================= 逐行滚动 =================
     {
-        check(window->m_taskList->verticalScrollMode() == QAbstractItemView::ScrollPerItem
-                  || window->m_taskList->verticalScrollMode() == QAbstractItemView::ScrollPerPixel,
-              "列表有纵向滚动模式设置");
+        // 必须是「按像素」：默认的 ScrollPerItem 下滚动条的值是行号，
+        // 而滚轮处理按行高做像素加减，单位不一致 -> 一次滚轮直接跳到底。
+        check(window->m_taskList->verticalScrollMode() == QAbstractItemView::ScrollPerPixel,
+              "列表按像素滚动（滚动条单位与滚轮步长一致）");
         // 行为验证：往视口投递一个滚轮事件，滚动量应当是一整行的高度而不是一个固定小值
         for (int i = 0; i < 60; ++i) {
             Task t;
@@ -5756,10 +5802,20 @@ static int run() {
         check(window->m_compact, "缩到阈值以下自动进入紧凑模式");
         check(!window->m_sidebar->isVisible(), "自动紧凑后侧栏被隐藏");
 
+        // 拉宽回去要自动退出紧凑（实机报过：拉宽了还是紧凑）
+        userResizeTo(MainWindow::kAutoCompactWidth + 120, 640);
+        check(!window->m_compact, "拉宽超过阈值后自动退出紧凑模式");
+        check(window->m_sidebar->isVisible(), "自动退出后侧栏回来了");
+
+        // 手动点 ⊡ 进去的，不该因为顺手拉宽就被弹出来
+        window->toggleCompactMode();
+        check(window->m_compact, "手动进入紧凑模式");
+        userResizeTo(MainWindow::kAutoCompactWidth + 120, 640);
+        check(window->m_compact, "手动进入的紧凑模式不会因为拉宽自动退出");
+        window->toggleCompactMode();
+        check(!window->m_compact, "手动再点一次退出");
+
         // 程序自己 resize（不是用户拖的）不该触发
-        window->toggleCompactMode();            // 先退出紧凑
-        QCoreApplication::processEvents();
-        check(!window->m_compact, "已退出紧凑模式");
         window->resize(MainWindow::kAutoCompactWidth - 40, 640);
         QCoreApplication::processEvents();
         check(!window->m_compact, "非用户拖拽的 resize 不会误触发自动紧凑");
@@ -5868,8 +5924,15 @@ static int run() {
         int rows = 0;
         countItems(headers, rows);
         check(headers == expectedHeaders, "计划内：每个非空时间桶一个分组头");
-        check(rows == static_cast<int>(planned.size()),
-              "计划内：默认全部展开，任务行数等于筛选结果");
+        // 「无日期」那一格按约定**默认折叠**，所以可见行数要减掉它。
+        // （之前这条断言能过，是因为自检沿用了一份旧的偏好文件 —— 那个文件里
+        //  折叠掩码恰好是 0。现在自检每次清空偏好，默认值才真正生效。）
+        int noDateCount = 0;
+        for (const Task &t : planned) {
+            if (t.deadline.empty()) ++noDateCount;
+        }
+        check(rows == static_cast<int>(planned.size()) - noDateCount,
+              "计划内：默认展开有日期的分组，「无日期」按约定折叠");
 
         // 分组头是可点的按钮，文字带桶名
         const QList<QPushButton*> headerButtons =

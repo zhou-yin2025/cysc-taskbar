@@ -158,7 +158,8 @@ private slots:
     // 「只显示任务」的紧凑模式：隐藏侧栏与工具栏，只留任务列表，
     // 并把窗口吸附到当前屏幕右上角。
     void toggleCompactMode();
-    void applyCompactMode();
+    // restoreGeometry = false 时只恢复面板，不动窗口几何（自动退出紧凑用）
+    void applyCompactMode(bool restoreGeometry = true);
     // 打开设置窗口，并把设置应用一遍。
     void openSettings();
     void applySettings();
@@ -306,6 +307,8 @@ private:
     bool m_pressWasDrag = false;
     // 用户正在拖窗口边缘改大小 / 缩窄自动进紧凑的宽度阈值。
     bool m_resizingByUser = false;
+    // 紧凑模式是「缩窄自动进入」的（而不是手动点 ⊡）—— 只有这种拉宽才自动退出
+    bool m_compactAuto = false;
     static constexpr int kAutoCompactWidth = 460;
     // 界面缩放：当前百分比、基准字号、基准窗口尺寸（避免累积放大）。
     int m_scalePercent = 150;
