@@ -271,6 +271,133 @@ private:
     qreal m_progress = 0.0;
 };
 
+
+// 任务状态的图形表示（F-003）：空心圆 / 旋转光线 / 圆内打勾 / 暂停双竖线。
+//
+// 为什么自己画：文字 chip 占宽度、而且三态之间只有文字差别，扫一眼不直观。
+// 圆只有 14px，绘制开销可以忽略；旋转由主窗口那个共享定时器统一推进
+// （绝不每行一个定时器 —— 几十条「进行中」会直接把 CPU 吃满）。
+class StatusGlyph : public QWidget {
+public:
+    explicit StatusGlyph(QWidget *parent = nullptr) : QWidget(parent) {
+        setFixedSize(14, 14);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+
+    void setStatus(int status) {
+        if (m_status == status) return;
+        m_status = status;
+        update();
+    }
+    int status() const { return m_status; }
+
+    // 0..1 的旋转相位，由共享定时器推进。
+    void setSpin(qreal phase) {
+        if (qFuzzyCompare(m_phase, phase)) return;
+        m_phase = phase;
+        update();
+    }
+    qreal spin() const { return m_phase; }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box(1.5, 1.5, width() - 3.0, height() - 3.0);
+
+        const Theme &th = ThemeManager::current();
+        const QColor ring = th.accentDim;
+
+        switch (m_status) {
+            case 2: {                       // 已完成：实心圆 + 勾
+                p.setPen(Qt::NoPen);
+                p.setBrush(th.accent);
+                p.drawEllipse(box);
+                QPen tick(th.onAccent, 1.6);
+                tick.setCapStyle(Qt::RoundCap);
+                p.setPen(tick);
+                const QPointF center = box.center();
+                p.drawLine(QPointF(center.x() - 2.6, center.y() + 0.2),
+                           QPointF(center.x() - 0.6, center.y() + 2.2));
+                p.drawLine(QPointF(center.x() - 0.6, center.y() + 2.2),
+                           QPointF(center.x() + 3.0, center.y() - 2.4));
+                break;
+            }
+            case 1: {                       // 进行中：底圈 + 一段绕着转的弧
+                p.setPen(QPen(ring, 1.2));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(box);
+                QPen arc(th.accent, 2.0);
+                arc.setCapStyle(Qt::RoundCap);
+                p.setPen(arc);
+                // Qt 的角度是 1/16 度，逆时针为正
+                const int start = static_cast<int>((1.0 - m_phase) * 360.0 * 16.0);
+                p.drawArc(box.adjusted(0.4, 0.4, -0.4, -0.4), start, 100 * 16);
+                break;
+            }
+            case 3: {                       // 已暂停：圈内两条竖线
+                p.setPen(QPen(ring, 1.2));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(box);
+                p.setPen(QPen(th.accentDim, 1.6));
+                const QPointF center = box.center();
+                p.drawLine(QPointF(center.x() - 1.6, center.y() - 2.4),
+                           QPointF(center.x() - 1.6, center.y() + 2.4));
+                p.drawLine(QPointF(center.x() + 1.6, center.y() - 2.4),
+                           QPointF(center.x() + 1.6, center.y() + 2.4));
+                break;
+            }
+            case 0:
+            default: {                      // 待办：空心圆
+                p.setPen(QPen(ring, 1.4));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(box);
+                break;
+            }
+        }
+    }
+
+private:
+    int m_status = 0;
+    qreal m_phase = 0.0;
+};
+
+// 第二行元信息：日期 · 步骤 n/m · 备注 · 标签（F-002 的约定）。
+// 没有元信息时返回空串 —— 调用方据此决定不建第二行（短任务保持单行）。
+QString rowMetaText(const Task &task) {
+    QStringList parts;
+
+    if (!task.deadline.empty()) {
+        const QString raw = QString::fromStdString(task.deadline);
+        // 完整时间取 "MM-DD HH:mm"；只写了日期的就只显示日期
+        parts << (raw.size() >= 16 ? raw.mid(5, 11) : raw);
+    }
+
+    const int total = static_cast<int>(task.subtasks.size());
+    if (total > 0) {
+        int done = 0;
+        for (const Subtask &step : task.subtasks) {
+            if (step.done) ++done;
+        }
+        parts << QString("步骤 %1/%2").arg(done).arg(total);
+    }
+
+    if (!task.details.empty()) {
+        parts << QString("备注");
+    }
+
+    if (!task.tags.empty()) {
+        QStringList tags;
+        tags.reserve(static_cast<int>(task.tags.size()));
+        for (const std::string &tag : task.tags) {
+            tags << QString::fromStdString(tag);
+        }
+        parts << QString("#%1").arg(tags.join(" #"));
+    }
+
+    return parts.join(" · ");
+}
+
 // 托盘是否可用。允许用环境变量 CYSC_FORCE_TRAY=1 覆盖，便于在没有通知区域的
 // 会话里验证「关窗 -> 收进托盘」这条路径本身是否正常。
 // 定义在文件末尾，这里先声明（setupTray 与 closeEvent 都要用）。
@@ -760,22 +887,16 @@ QWidget *MainWindow::createRowWidget(const Task& task) {
     outer->setContentsMargins(7, 0, 7, 5);
     outer->setSpacing(0);
 
-    // --- 第一行：左侧状态色条 + 优先级圆点 + 标题 + 状态 + 分类 + 截止时间 ---
+    // --- 第一行：优先级竖条 + 状态图形 + 标题（+ 星标）---
+    //
+    // F-003 起不再有「状态色条」「状态文字 chip」「固定 78px 时间列」：
+    // 状态交给左边的三态图形，时间挪到第二行 —— 150% 缩放下时间被挤出视口的
+    // 根因（固定宽度列）就此消失。
     QWidget *head = new QWidget(container);
     head->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     QHBoxLayout *h = new QHBoxLayout(head);
-    h->setContentsMargins(0, 4, 0, 4);
+    h->setContentsMargins(0, 4, 0, 1);
     h->setSpacing(6);
-
-    // 左边一条 4px 状态色条：待办蓝 / 进行中青绿 / 已完成灰 / 已暂停琥珀。
-    // 只靠一个小圆点和文字块区分太弱，加一条整行高的色条，扫一眼就知道哪些在做。
-    QLabel *stripe = new QLabel(head);
-    stripe->setObjectName("rowStripe");
-    stripe->setFixedWidth(4);
-    stripe->setMinimumHeight(18);
-    stripe->setProperty("accent", statusAccentColor(task.status));
-    stripe->setToolTip(QString("状态：%1").arg(taskStatusText(task.status)));
-    h->addWidget(stripe);
 
     // 优先级：原来只有一颗 10px 的小圆点，用户反馈「紧急度效果不明显」。
     // 改成整行高的竖条，宽度随等级递增（低 2px / 中 3px / 高 4px / 紧急 5px），
@@ -789,14 +910,19 @@ QWidget *MainWindow::createRowWidget(const Task& task) {
     priorityBar->setToolTip(QString("优先级：%1").arg(priorityName(task.priority)));
     h->addWidget(priorityBar);
 
+    // 状态图形（空心圆 / 旋转光线 / 圆内打勾 / 暂停）
+    auto *glyph = new StatusGlyph(head);
+    glyph->setObjectName("rowGlyph");
+    glyph->setStatus(task.status);
+    glyph->setToolTip(QString("状态：%1（双击切换）").arg(taskStatusText(task.status)));
+    h->addWidget(glyph);
+
     auto *titleLabel = new StrikeLabel(head);
     titleLabel->setObjectName("rowTitle");
     // 标题占满剩余宽度，太长时由 Qt 自己省略（setTextInteractionFlags 保持默认）。
     // 不再固定 174px、也不再手动 elidedText —— 手动省略只在固定宽度下才对，
     // 窗口拉宽后标题还是被砍掉，反而更难看清。
-    titleLabel->setText(QString("%1 %2")
-                            .arg(expanded ? "▼" : "▶")
-                            .arg(QString::fromStdString(task.title)));
+    titleLabel->setText(QString::fromStdString(task.title));
     titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     titleLabel->setMinimumWidth(40);
     titleLabel->setProperty("state", task.status == 2 ? "done"
@@ -821,45 +947,42 @@ QWidget *MainWindow::createRowWidget(const Task& task) {
         }
     }
 
-    if (!task.details.empty()) {
-        QLabel *noteMark = new QLabel("备注", head);
-        noteMark->setObjectName("rowNote");
-        noteMark->setToolTip(QString::fromStdString(task.details));
-        h->addWidget(noteMark);
+    // 星标在最右（To Do 的排法）；没星标就不占位
+    if (task.starred) {
+        auto *star = new QLabel(QString::fromUtf8("★"), head);
+        star->setObjectName("rowStar");
+        star->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        star->setToolTip("已标为「重要」");
+        star->setStyleSheet(
+            QString("QLabel { color: %1; font-size: 11px; background: transparent; }")
+                .arg(ThemeManager::hex(ThemeManager::current().accent)));
+        h->addWidget(star);
     }
-
-    QLabel *statusLabel = new QLabel(taskStatusText(task.status), head);
-    statusLabel->setObjectName("rowStatus");
-    statusLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-
-    // 先加弹簧把前面的内容顶到左边，再放截止时间。
-    //
-    // 之前弹簧加在最后，结果时间被挤在中间、右边留一大片空白。
-    // 现在顺序是：标题（占剩余全部宽度）→ 状态/分类 chip → 弹簧 → 时间。
-    // 时间固定在 78px 宽的右对齐标签里，所以所有行的时间都对齐在同一列。
-    h->addWidget(statusLabel);
-    h->addStretch(1);
-
-    // 截止时间：固定宽度 + 右对齐；没有截止时间时显示灰色占位符。
-    QString timeStr = "无";
-    if (task.deadline.length() >= 16) {
-        timeStr = QString::fromStdString(task.deadline.substr(5, 11));
-    }
-    QLabel *timeLabel = new QLabel(timeStr, head);
-    timeLabel->setObjectName("rowTime");
-    timeLabel->setProperty("isEmpty", task.deadline.empty());
-    timeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    timeLabel->setFixedWidth(78);
-    h->addWidget(timeLabel);
 
     outer->addWidget(head);
 
+    // --- 第二行：元信息（没有内容就整行不建，短任务保持单行）---
+    const QString meta = rowMetaText(task);
+    if (!meta.isEmpty()) {
+        QWidget *metaRow = new QWidget(container);
+        metaRow->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        QHBoxLayout *ml = new QHBoxLayout(metaRow);
+        // 左边留出优先级竖条 + 状态圆的宽度，让第二行对齐到标题下方
+        ml->setContentsMargins(26, 0, 0, 3);
+        ml->setSpacing(0);
+        auto *metaLabel = new QLabel(meta, metaRow);
+        metaLabel->setObjectName("rowMeta");
+        metaLabel->setStyleSheet(
+            QString("QLabel { color: %1; font-size: 10px; background: transparent; }")
+                .arg(ThemeManager::hex(ThemeManager::current().accentDim)));
+        metaLabel->setTextInteractionFlags(Qt::NoTextInteraction);
+        ml->addWidget(metaLabel);
+        ml->addStretch(1);
+        outer->addWidget(metaRow);
+    }
+
     // 整行样式由列表统一挂一次（见 installRowStyleSheet），这里不再逐个设。
-    // 另外三个彩色小标签（色条/圆点/两个 chip）用很小的内联样式表——它们没有
-    // 子控件，重算代价可忽略，但颜色是每行不同的，没法放进公共规则。
-    stripe->setStyleSheet(stripeStyle(task.status));
     priorityBar->setStyleSheet(priorityBarStyle(task.priority));
-    statusLabel->setStyleSheet(statusChipStyle(task.status));
 
     // 高优先级：整张卡片换成优先级颜色的粗描边（需求：紧急度要保证可见）
     if (const QString pb = priorityBorderStyle(task.priority); !pb.isEmpty()) {
@@ -1560,9 +1683,20 @@ void MainWindow::tickGlow() {
     for (int i = 0; i < m_taskList->count(); ++i) {
         QWidget *row = m_taskList->itemWidget(m_taskList->item(i));
         auto *taskRow = dynamic_cast<TaskRowWidget*>(row);
-        if (!taskRow || !taskRow->glowing()) continue;
-        taskRow->setGlowProgress(m_glowProgress);
-        any = true;
+        if (!taskRow) continue;
+        if (taskRow->glowing()) {
+            taskRow->setGlowProgress(m_glowProgress);
+            any = true;
+        }
+        // F-003：进行中的状态圆也靠这个共享定时器转，不另开 timer。
+        // 和上面找 StrikeLabel 一样，不能写 findChildren<StatusGlyph*>
+        // （那要求类型里有 Q_OBJECT），只能先取 QWidget 再 dynamic_cast。
+        for (QWidget *child : row->findChildren<QWidget*>()) {
+            auto *glyph = dynamic_cast<StatusGlyph*>(child);
+            if (!glyph || glyph->status() != 1) continue;
+            glyph->setSpin(m_glowProgress);
+            any = true;
+        }
     }
     // 主窗口边框也要跟着重画（有进行中任务时那道绕行的光）
     if (hasDoingTask()) update();
@@ -5514,6 +5648,131 @@ static int run() {
         window->m_smartView = SmartView::All;
         window->refreshList();
         check(window->m_taskList->dragEnabled(), "回到全部视图又能拖了");
+    }
+
+    // ==================== 两行式行布局 + 状态图形（F-003/F-002）====================
+    {
+        window->m_smartView = SmartView::All;
+        window->m_useSmartView = true;
+        window->m_sortMode = MainWindow::SortManual;
+        window->refreshList();
+
+        // 只有标题的任务：保持单行，不该出现第二行
+        Task plain;
+        plain.title = "单行任务";
+        plain.listId = 1;
+        const int plainId = window->m_doc.addTask(window->withTopOrder(plain));
+        window->persistDocument();
+        window->refreshList();
+
+        auto rowOf = [window](int taskId) -> QWidget* {
+            for (int i = 0; i < window->m_taskList->count(); ++i) {
+                QListWidgetItem *item = window->m_taskList->item(i);
+                if (item->data(Qt::UserRole).toInt() == taskId) {
+                    return window->m_taskList->itemWidget(item);
+                }
+            }
+            return nullptr;
+        };
+
+        QWidget *plainRow = rowOf(plainId);
+        check(plainRow != nullptr, "单行任务能取到行控件");
+        bool plainHasMeta = false;
+        if (plainRow) {
+            for (QLabel *l : plainRow->findChildren<QLabel*>()) {
+                if (l->objectName() == "rowMeta") plainHasMeta = true;
+            }
+        }
+        check(!plainHasMeta, "没有元信息的任务不建第二行");
+
+        // 有日期 + 步骤 + 标签的任务：两行，第二行把三样都写上
+        Task rich;
+        rich.title = "两行任务";
+        rich.listId = 1;
+        rich.deadline = "2026-12-18 09:30";
+        rich.details = "有些备注";
+        rich.tags = {"学习", "复习"};
+        Subtask s1; s1.id = 0; s1.title = "第一步"; s1.done = true;
+        Subtask s2; s2.id = 1; s2.title = "第二步";
+        rich.subtasks = {s1, s2};
+        const int richId = window->m_doc.addTask(window->withTopOrder(rich));
+        window->persistDocument();
+        window->refreshList();
+
+        QWidget *richRow = rowOf(richId);
+        check(richRow != nullptr, "两行任务能取到行控件");
+        QString metaText;
+        if (richRow) {
+            for (QLabel *l : richRow->findChildren<QLabel*>()) {
+                if (l->objectName() == "rowMeta") metaText = l->text();
+            }
+        }
+        check(!metaText.isEmpty(), "有元信息的任务建了第二行");
+        check(metaText.contains("12-18 09:30"), "第二行有日期");
+        check(metaText.contains(QString::fromUtf8("步骤 1/2")), "第二行有步骤进度");
+        check(metaText.contains(QString::fromUtf8("备注")), "第二行标了备注");
+        check(metaText.contains("#学习") && metaText.contains("#复习"), "第二行列出标签");
+
+        // 行内不再有固定宽度的时间列（F-003 要消除的那个根因）
+        bool hasTimeColumn = false;
+        if (richRow) {
+            for (QLabel *l : richRow->findChildren<QLabel*>()) {
+                if (l->objectName() == "rowTime") hasTimeColumn = true;
+            }
+        }
+        check(!hasTimeColumn, "行内不再有固定宽度的时间列");
+
+        // 状态图形三态
+        auto glyphOf = [](QWidget *row) -> StatusGlyph* {
+            if (!row) return nullptr;
+            for (QWidget *w : row->findChildren<QWidget*>()) {
+                if (w->objectName() == "rowGlyph") return dynamic_cast<StatusGlyph*>(w);
+            }
+            return nullptr;
+        };
+        StatusGlyph *idleGlyph = glyphOf(rowOf(richId));
+        check(idleGlyph && idleGlyph->status() == 0, "待办任务的状态图形是空心圆");
+
+        window->applyStatus(richId, 1);
+        window->refreshList();
+        StatusGlyph *doingGlyph = glyphOf(rowOf(richId));
+        check(doingGlyph && doingGlyph->status() == 1, "进行中任务换成旋转图形");
+        if (doingGlyph) {
+            const qreal before = doingGlyph->spin();
+            window->tickGlow();
+            check(doingGlyph->spin() != before, "进行中的圆会随共享定时器转动");
+        }
+
+        window->applyStatus(richId, 2);
+        window->refreshList();
+        StatusGlyph *doneGlyph = glyphOf(rowOf(richId));
+        check(doneGlyph && doneGlyph->status() == 2, "已完成任务换成打勾图形");
+        bool stillStruck = false;
+        for (QLabel *l : rowOf(richId)->findChildren<QLabel*>()) {
+            if (auto *sl = dynamic_cast<StrikeLabel*>(l)) {
+                if (sl->strikeOn()) stillStruck = true;
+            }
+        }
+        check(stillStruck, "完成时删除线仍然保留（图形与删除线并存）");
+
+        // 星标在右上角
+        Task starred;
+        starred.title = "星标任务";
+        starred.listId = 1;
+        starred.starred = true;
+        const int starredId = window->m_doc.addTask(window->withTopOrder(starred));
+        window->persistDocument();
+        window->refreshList();
+        bool hasStar = false;
+        if (QWidget *row = rowOf(starredId)) {
+            for (QLabel *l : row->findChildren<QLabel*>()) {
+                if (l->objectName() == "rowStar") hasStar = true;
+            }
+        }
+        check(hasStar, "标了「重要」的任务行上有星标");
+
+        window->m_sortMode = MainWindow::SortCreatedAsc;
+        window->refreshList();
     }
 
     // ======================= 批量导入（F-005）=======================
