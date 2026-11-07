@@ -49,7 +49,7 @@ rem set "QT_PLUGIN_PATH=D:\Qt\6.11.0\msvc2022_64\plugins"
 rem build\ninja-Debug\cysc-taskbar.exe --selftest      (应用内自检 24 项)
 rem build\ninja-Debug\cysc-taskbar.exe --dsdemo        (数据结构演示 38 项)
 rem set "CYSC_TEST_TMPDIR=%CD%\build\ninja-Debug\cysc_test_tmp"
-rem build\ninja-Debug\cysc-taskbar.exe --guitest       (界面自检 418 项)
+rem build\ninja-Debug\cysc-taskbar.exe --guitest       (界面自检 420 项)
 
 rem ---- 9. 指定数据库位置（覆盖 StoragePaths 的自动探测）----
 rem set "CYSC_DB_PATH=D:\somewhere\cysc.db"
