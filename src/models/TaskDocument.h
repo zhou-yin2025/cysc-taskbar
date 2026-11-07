@@ -36,6 +36,9 @@ struct TaskFilter {
     std::string tag;                    // 非空时只看带该标签的任务（走哈希索引）
     std::string search;                 // 非空时做全文子串过滤
     bool hideDone = false;
+    // F-007：计划内视图把「没有截止时间的未完成任务」也收进来，落在「无日期」桶。
+    // 侧栏的计数不用这个开关（否则「计划内」的数目会显得没道理）。
+    bool includeUndatedInPlanned = false;
     TaskSort sort = TaskSort::CreatedAsc;
 };
 

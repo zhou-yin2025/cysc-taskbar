@@ -19,6 +19,7 @@ const char *TaskSettingsDialog::kOnTop = "window/onTop";
 const char *TaskSettingsDialog::kDensity = "view/density";
 const char *TaskSettingsDialog::kScale = "view/scale";
 const char *TaskSettingsDialog::kConfirmDelete = "view/confirmDelete";
+const char *TaskSettingsDialog::kPlannedCollapsed = "planned/collapsedMask";
 
 bool TaskSettingsDialog::boolValue(const char *key, bool fallback) {
     QSettings s;

@@ -502,7 +502,10 @@ bool TaskDocument::matches(const Task& task, const TaskFilter& filter) {
                 if (!task.starred) return false;
                 break;
             case SmartView::Planned:
-                if (!task.hasDeadline() || task.status == 2) return false;
+                if (task.status == 2) return false;
+                // 没日期的任务默认不算「计划内」；只有视图层要分桶时才收进来，
+                // 好让它们在「无日期」那一格里可见（默认折叠）。
+                if (!task.hasDeadline() && !filter.includeUndatedInPlanned) return false;
                 break;
             case SmartView::Completed:
                 if (task.status != 2) return false;

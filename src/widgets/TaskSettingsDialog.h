@@ -37,6 +37,7 @@ public:
     static const char *kDensity;        // 行密度：0 紧凑 / 1 标准 / 2 宽松
     static const char *kScale;          // 界面缩放档位：0=100% 1=125% 2=150% 3=175% 4=200%
     static const char *kConfirmDelete;  // 删除任务前确认
+    static const char *kPlannedCollapsed;  // 计划内各分组的折叠状态（位掩码，F-007）
 
     static bool boolValue(const char *key, bool fallback);
     static int intValue(const char *key, int fallback);

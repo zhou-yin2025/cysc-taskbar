@@ -723,6 +723,9 @@ TaskFilter MainWindow::buildQuery() const {
     filter.smartView = m_smartView;
     filter.listId = m_useSmartView ? -1 : m_listFilter;
     filter.hideDone = m_hideDoneChecked;
+    // 计划内分桶时才把「无日期」的任务也拉进来（F-007）
+    filter.includeUndatedInPlanned =
+        m_useSmartView && m_smartView == SmartView::Planned && filter.search.empty() && !m_compact;
     switch (m_sortMode) {
         case SortDeadlineAsc: filter.sort = TaskSort::DeadlineAsc; break;
         case SortManual:      filter.sort = TaskSort::Manual; break;
@@ -1467,6 +1470,8 @@ void MainWindow::applyTaskEdit(int id, const Task& edited) {
 }
 
 void MainWindow::setExpandedTask(int id) {
+    if (id < 0) return;      // 分组头（F-007）不是任务，点它不展开
+
     m_expandedId = (m_expandedId == id) ? -1 : id;
     applyExpansion();
 }
@@ -1587,8 +1592,28 @@ void MainWindow::tickGlow() {
 
 void MainWindow::refreshList() {
     const TaskFilter query = buildQuery();
-    const std::vector<Task> visible = m_doc.query(query);
+    std::vector<Task> visible = m_doc.query(query);
     const int total = static_cast<int>(m_doc.tasks().size());
+
+    // F-007：只有「计划内」要按时间分桶，而且搜索时不分 —— 用户此刻是在找
+    // 某个具体任务，插一堆分组头只会碍事。
+    const bool groupByBucket = m_useSmartView && m_smartView == SmartView::Planned
+                               && query.search.empty() && !m_compact;
+
+    if (groupByBucket) {
+        const QDate today = QDate::currentDate();
+        std::stable_sort(visible.begin(), visible.end(), [&today](const Task& a, const Task& b) {
+            const PlannedBucket ba =
+                plannedBucketOf(a.deadline, today.year(), today.month(), today.day());
+            const PlannedBucket bb =
+                plannedBucketOf(b.deadline, today.year(), today.month(), today.day());
+            const int ra = plannedBucketRank(ba);
+            const int rb = plannedBucketRank(bb);
+            if (ra != rb) return ra < rb;
+            // 同一个桶内按截止时间先后；无日期的保持原顺序
+            return a.deadline != b.deadline && a.deadline < b.deadline;
+        });
+    }
 
     m_buildingList = true;
     m_taskList->clear();
@@ -1596,8 +1621,35 @@ void MainWindow::refreshList() {
     m_collapsedHeights.clear();
     m_rowTaskIds.clear();
 
+    const QDate todayForBuckets = QDate::currentDate();
+    PlannedBucket currentBucket = PlannedBucket::NoDate;
+    bool haveBucket = false;
+    // 每组多少条：分组头要显示「今天 · 3」
+    std::vector<int> bucketCounts(7, 0);
+    if (groupByBucket) {
+        for (const Task& t : visible) {
+            const PlannedBucket b =
+                plannedBucketOf(t.deadline, todayForBuckets.year(),
+                                todayForBuckets.month(), todayForBuckets.day());
+            ++bucketCounts[static_cast<std::size_t>(plannedBucketRank(b))];
+        }
+    }
+
     for (std::size_t i = 0; i < visible.size(); ++i) {
         const Task& t = visible[i];
+
+        if (groupByBucket) {
+            const PlannedBucket b =
+                plannedBucketOf(t.deadline, todayForBuckets.year(),
+                                todayForBuckets.month(), todayForBuckets.day());
+            if (!haveBucket || b != currentBucket) {
+                currentBucket = b;
+                haveBucket = true;
+                appendBucketHeader(b, bucketCounts[static_cast<std::size_t>(plannedBucketRank(b))]);
+            }
+            if (isBucketCollapsed(b)) continue;      // 折叠起来的组不渲染行
+        }
+
         QListWidgetItem *item = new QListWidgetItem(m_taskList);
         item->setData(Qt::UserRole, t.id);
 
@@ -1637,6 +1689,54 @@ void MainWindow::refreshList() {
     m_statusLabel->setText(QString("共 %1 项 - 未完成 %2，已完成 %3　｜　单击查看详情，双击切换状态")
                                .arg(total).arg(total - done).arg(done));
     m_statusLabel->setStyleSheet(QString("QLabel { color: %1; font-size: 10px; }").arg(ThemeManager::hex(ThemeManager::current().accentDim)));
+}
+
+// ------------------------------------------------------------------ 计划内分桶
+
+bool MainWindow::isBucketCollapsed(PlannedBucket bucket) const {
+    return (m_collapsedBucketMask >> plannedBucketRank(bucket)) & 1;
+}
+
+void MainWindow::toggleBucketCollapsed(PlannedBucket bucket) {
+    m_collapsedBucketMask ^= (1 << plannedBucketRank(bucket));
+    QSettings s;
+    s.setValue(TaskSettingsDialog::kPlannedCollapsed, m_collapsedBucketMask);
+    refreshList();
+}
+
+void MainWindow::appendBucketHeader(PlannedBucket bucket, int count) {
+    const Theme &th = ThemeManager::current();
+    const bool collapsed = isBucketCollapsed(bucket);
+
+    QListWidgetItem *item = new QListWidgetItem(m_taskList);
+    // 分组头不是任务：id 记 -1，所有「取 id 当任务用」的地方都会跳过它。
+    item->setData(Qt::UserRole, -1);
+    item->setFlags(Qt::ItemIsEnabled);        // 不可选中、不可拖
+    item->setSizeHint(QSize(0, 22));
+
+    QWidget *host = new QWidget(m_taskList);
+    QHBoxLayout *layout = new QHBoxLayout(host);
+    layout->setContentsMargins(8, 1, 8, 1);
+    layout->setSpacing(4);
+
+    const QString glyph = collapsed ? QString::fromUtf8("▸") : QString::fromUtf8("▾");
+    QPushButton *btn = new QPushButton(
+        QString("%1 %2 · %3").arg(glyph, QString::fromUtf8(plannedBucketText(bucket))).arg(count),
+        host);
+    btn->setObjectName("bucketHeader");
+    btn->setFlat(true);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setStyleSheet(
+        QString("QPushButton { color: %1; font-size: 10px; font-weight: bold;"
+                " text-align: left; border: none; padding: 0 2px; background: transparent; }"
+                "QPushButton:hover { color: %2; }")
+            .arg(ThemeManager::hex(th.accent), ThemeManager::hex(th.accentDim)));
+    connect(btn, &QPushButton::clicked, this,
+            [this, bucket]() { toggleBucketCollapsed(bucket); });
+    layout->addWidget(btn);
+    layout->addStretch(1);
+
+    m_taskList->setItemWidget(item, host);
 }
 
 // ------------------------------------------------------------------ 交互
@@ -1904,6 +2004,7 @@ void MainWindow::refreshRowKeepExpanded(int taskId) {
 }
 
 void MainWindow::advanceStatusDeferred(int id) {
+    if (id < 0) return;      // 分组头（F-007）不是任务
     QTimer::singleShot(0, this, [this, id]() { advanceStatus(id); });
 }
 
@@ -1926,7 +2027,7 @@ void MainWindow::onNewTaskFull() {
 
     // addTask 不会自己压快照（update/remove 会），所以新建前手动记一步撤销。
     m_doc.beginUndo();
-    const int newId = m_doc.addTask(dialog.task());
+    const int newId = m_doc.addTask(withTopOrder(dialog.task()));
     if (newId < 0) {
         setStatusMessage("保存失败（数据库错误）", true);
         return;
@@ -1940,7 +2041,7 @@ void MainWindow::onNewTaskFull() {
 void MainWindow::createTask(const Task& task) {
     // addTask 不会自己压快照（update/remove 会），所以新建前手动记一步撤销。
     m_doc.beginUndo();
-    const int id = m_doc.addTask(task);
+    const int id = m_doc.addTask(withTopOrder(task));
     if (id < 0) {
         setStatusMessage("保存失败（数据库错误）", true);
         return;
@@ -1949,6 +2050,16 @@ void MainWindow::createTask(const Task& task) {
     m_expandedId = -1;
     refreshList();
     setStatusMessage(QString("[完成] 已创建任务 #%1").arg(id));
+}
+
+Task MainWindow::withTopOrder(Task task) const {
+    // 手动排序下「新任务在最上面」：取当前最小值再减一。
+    int minOrder = 0;
+    for (const Task& existing : m_doc.tasks()) {
+        if (existing.manualOrder < minOrder) minOrder = existing.manualOrder;
+    }
+    task.manualOrder = minOrder - 1;
+    return task;
 }
 
 // ------------------------------------------------------------------ 批量导入（F-005）
@@ -3057,6 +3168,11 @@ void MainWindow::applySettings() {
         if (wasVisible) show();
     }
 
+    // 计划内各分组的折叠状态（F-007）：重启后保持用户上次的折叠选择
+    // 默认把「无日期」那一格折叠起来（F-007 的约定：折叠置底）
+    m_collapsedBucketMask = TaskSettingsDialog::intValue(
+        TaskSettingsDialog::kPlannedCollapsed, 1 << plannedBucketRank(PlannedBucket::NoDate));
+
     // 行密度：影响任务行的间距
     m_density = qBound(0, TaskSettingsDialog::intValue(TaskSettingsDialog::kDensity, 1), 2);
     if (m_taskList) {
@@ -3508,6 +3624,12 @@ static int run() {
         QWidget *w = window->m_taskList->itemWidget(window->m_taskList->item(row));
         return w ? w->findChild<QWidget*>("detailPanelWidget") : nullptr;
     };
+
+    // 自检里把排序钉成「创建顺序」：产品默认已经是手动排序（新建置顶），
+    // 而下面的断言都按「按创建顺序排列」写的。
+    window->m_sortMode = MainWindow::SortCreatedAsc;
+    window->refreshList();
+    QCoreApplication::processEvents();
 
     window->expandTask(firstId);
     check(window->m_expandedId == firstId, "单击后记录为展开状态");
@@ -5115,6 +5237,159 @@ static int run() {
         check(again && !again->strikeOn(), "回到待办后删除线消失");
 
         window->m_doc.removeTask(doneId);
+        window->refreshList();
+    }
+
+    // ======================= 计划内分桶（F-007）=======================
+    {
+        const QDate today = QDate::currentDate();
+        auto addBucketed = [window](const QString& title, const QDate& day, bool hasDate) {
+            Task t;
+            t.title = title.toStdString();
+            t.listId = 1;
+            t.deadline = hasDate
+                             ? (day.toString("yyyy-MM-dd") + " 09:00").toStdString()
+                             : std::string();
+            return window->m_doc.addTask(t);
+        };
+        addBucketed("桶-今天", today, true);
+        addBucketed("桶-明天", today.addDays(1), true);
+        addBucketed("桶-更晚", today.addDays(40), true);
+        addBucketed("桶-无日期", today, false);
+
+        window->m_smartView = SmartView::Planned;
+        window->m_useSmartView = true;
+        window->m_expandedId = -1;
+        window->refreshList();
+
+        // 期望有几个非空桶：直接问模型层，和界面用的是同一套函数
+        std::vector<bool> seenBucket(7, false);
+        const std::vector<Task> planned = window->m_doc.query(window->buildQuery());
+        for (const Task& t : planned) {
+            seenBucket[static_cast<std::size_t>(
+                plannedBucketRank(plannedBucketOf(t.deadline, today.year(), today.month(),
+                                                  today.day())))] = true;
+        }
+        int expectedHeaders = 0;
+        for (bool seen : seenBucket) {
+            if (seen) ++expectedHeaders;
+        }
+
+        auto countItems = [window](int& headers, int& rows) {
+            headers = 0;
+            rows = 0;
+            for (int i = 0; i < window->m_taskList->count(); ++i) {
+                if (window->m_taskList->item(i)->data(Qt::UserRole).toInt() < 0) {
+                    ++headers;
+                } else {
+                    ++rows;
+                }
+            }
+        };
+        int headers = 0;
+        int rows = 0;
+        countItems(headers, rows);
+        check(headers == expectedHeaders, "计划内：每个非空时间桶一个分组头");
+        check(rows == static_cast<int>(planned.size()),
+              "计划内：默认全部展开，任务行数等于筛选结果");
+
+        // 分组头是可点的按钮，文字带桶名
+        const QList<QPushButton*> headerButtons =
+            window->m_taskList->findChildren<QPushButton*>("bucketHeader");
+        check(headerButtons.size() == expectedHeaders, "每个分组头都有一个按钮");
+        bool hasTodayHeader = false;
+        bool hasNoDateHeader = false;
+        for (QPushButton *b : headerButtons) {
+            if (b->text().contains(QString::fromUtf8("今天"))) hasTodayHeader = true;
+            if (b->text().contains(QString::fromUtf8("无日期"))) hasNoDateHeader = true;
+        }
+        check(hasTodayHeader, "分组头里有「今天」");
+        check(hasNoDateHeader, "分组头里有「无日期」（没有截止时间的任务不丢）");
+
+        // 折叠「今天」这一组：任务行变少，分组头数量不变，状态写进设置
+        if (hasTodayHeader) {
+            for (QPushButton *b : headerButtons) {
+                if (b->text().contains(QString::fromUtf8("今天"))) {
+                    b->click();
+                    break;
+                }
+            }
+            int headersAfter = 0;
+            int rowsAfter = 0;
+            countItems(headersAfter, rowsAfter);
+            check(headersAfter == headers, "折叠后分组头数量不变");
+            check(rowsAfter == rows - 1, "折叠「今天」后少一行（该组只有一条）");
+            check(QSettings().value(TaskSettingsDialog::kPlannedCollapsed, 0).toInt() != 0,
+                  "折叠状态写进了设置");
+
+            // 再点一次展开，恢复原状，别影响后面的段落
+            const QList<QPushButton*> again =
+                window->m_taskList->findChildren<QPushButton*>("bucketHeader");
+            for (QPushButton *b : again) {
+                if (b->text().contains(QString::fromUtf8("今天"))) {
+                    b->click();
+                    break;
+                }
+            }
+            int headersBack = 0;
+            int rowsBack = 0;
+            countItems(headersBack, rowsBack);
+            check(rowsBack == rows, "再点一次展开回来");
+        }
+
+        // 回到「全部」视图，后面的段落还要用
+        window->m_smartView = SmartView::All;
+        window->refreshList();
+    }
+
+    // ======================= 新建置顶（F-007）=======================
+    {
+        const MainWindow::SortMode before = window->m_sortMode;
+        window->m_sortMode = MainWindow::SortManual;
+        window->m_smartView = SmartView::All;
+        window->m_useSmartView = true;
+
+        Task first;
+        first.title = "置顶测试-1";
+        first.listId = 1;
+        window->createTask(first);
+        const int topId = window->m_taskList->item(0)->data(Qt::UserRole).toInt();
+        check(window->m_doc.findTask(topId) && window->m_doc.findTask(topId)->title == "置顶测试-1",
+              "手动排序下新建的任务排在最上面");
+
+        Task second;
+        second.title = "置顶测试-2";
+        second.listId = 1;
+        window->createTask(second);
+        const int newerTop = window->m_taskList->item(0)->data(Qt::UserRole).toInt();
+        check(window->m_doc.findTask(newerTop) && window->m_doc.findTask(newerTop)->title == "置顶测试-2",
+              "再建一条，最新的排最上面");
+        check(newerTop != topId, "两次新建的是不同任务");
+
+        // 计划内不受手动顺序影响：仍然按截止时间先后
+        window->m_smartView = SmartView::Planned;
+        window->m_useSmartView = true;
+        window->refreshList();
+        std::vector<std::string> deadlines;
+        for (int i = 0; i < window->m_taskList->count(); ++i) {
+            const int id = window->m_taskList->item(i)->data(Qt::UserRole).toInt();
+            if (id < 0) continue;
+            const Task *row = window->m_doc.findTask(id);
+            if (row) deadlines.push_back(row->deadline);
+        }
+        bool ascending = true;
+        std::string previous;
+        bool havePrevious = false;
+        for (const std::string &d : deadlines) {
+            if (d.empty()) continue;      // 无日期的排在最后，不参与比较
+            if (havePrevious && d < previous) ascending = false;
+            previous = d;
+            havePrevious = true;
+        }
+        check(ascending, "计划内按截止时间升序（不受手动排序影响）");
+
+        window->m_smartView = SmartView::All;
+        window->m_sortMode = before;
         window->refreshList();
     }
 

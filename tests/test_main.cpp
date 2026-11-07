@@ -93,6 +93,82 @@ namespace {
 
 // ---------------------------------------------------------------- Vector<T>
 
+// ------------------------------------------------------------------ 计划内分桶
+//
+// F-007 的模型层：给定「今天」，每条任务的截止时间必须落进确定的桶里。
+// 「今天」由调用方传入，所以这些断言在任何日期运行都一样。
+
+void testPlannedBucket() {
+    testutil::section("计划内分桶 (PlannedBucket)");
+
+    // 2026-11-07 是周六（周一=0 -> 5）。
+    const int y = 2026, m = 11, d = 7;
+
+    testutil::expect(plannedBucketText(PlannedBucket::Overdue) == std::string("逾期"),
+                     "逾期桶的文案");
+    testutil::expect(plannedBucketText(PlannedBucket::NoDate) == std::string("无日期"),
+                     "无日期桶的文案");
+
+    // 空 / 脏数据一律算「无日期」
+    testutil::expect(plannedBucketOf("", y, m, d) == PlannedBucket::NoDate,
+                     "没有截止时间 -> 无日期");
+    testutil::expect(plannedBucketOf("2026/11/07 09:00", y, m, d) == PlannedBucket::NoDate,
+                     "斜杠日期不是合法存储格式 -> 无日期");
+    testutil::expect(plannedBucketOf("2026-13-01 09:00", y, m, d) == PlannedBucket::NoDate,
+                     "月份越界 -> 无日期");
+
+    // 逾期 / 今天 / 明天
+    testutil::expect(plannedBucketOf("2026-11-06 23:59", y, m, d) == PlannedBucket::Overdue,
+                     "昨天 -> 逾期");
+    testutil::expect(plannedBucketOf("2020-01-01 00:00", y, m, d) == PlannedBucket::Overdue,
+                     "很久以前 -> 逾期");
+    testutil::expect(plannedBucketOf("2026-11-07 00:00", y, m, d) == PlannedBucket::Today,
+                     "今天凌晨也算今天");
+    testutil::expect(plannedBucketOf("2026-11-07 23:59", y, m, d) == PlannedBucket::Today,
+                     "今天深夜也算今天");
+    testutil::expect(plannedBucketOf("2026-11-08 10:00", y, m, d) == PlannedBucket::Tomorrow,
+                     "明天");
+
+    // 本周：2026-11-07 周六 -> 本周日 11-08；所以 11-08 已经是「明天」，
+    // 本周桶在周六这天天然为空。换一个周中的「今天」再验证。
+    const int wy = 2026, wm = 11, wd = 4;      // 周三
+    testutil::expect(plannedBucketOf("2026-11-06 09:00", wy, wm, wd) == PlannedBucket::ThisWeek,
+                     "周五（本周内）");
+    testutil::expect(plannedBucketOf("2026-11-08 09:00", wy, wm, wd) == PlannedBucket::ThisWeek,
+                     "本周日仍算本周");
+
+    // 本月 / 更晚
+    testutil::expect(plannedBucketOf("2026-11-09 09:00", wy, wm, wd) == PlannedBucket::ThisMonth,
+                     "下周一还在本月 -> 本月");
+    testutil::expect(plannedBucketOf("2026-11-30 09:00", wy, wm, wd) == PlannedBucket::ThisMonth,
+                     "本月最后一天 -> 本月");
+    testutil::expect(plannedBucketOf("2026-12-01 09:00", wy, wm, wd) == PlannedBucket::Later,
+                     "下个月 -> 更晚");
+    testutil::expect(plannedBucketOf("2027-03-01 09:00", wy, wm, wd) == PlannedBucket::Later,
+                     "明年 -> 更晚");
+
+    // 跨年边界：12 月的「本月」不能算到明年 1 月
+    testutil::expect(plannedBucketOf("2026-12-31 09:00", 2026, 12, 15) == PlannedBucket::ThisMonth,
+                     "12 月的本月包含 12-31");
+    testutil::expect(plannedBucketOf("2027-01-01 09:00", 2026, 12, 15) == PlannedBucket::Later,
+                     "跨年后算更晚");
+
+    // 排序主键：桶的顺序必须和显示顺序一致
+    testutil::expect(plannedBucketRank(PlannedBucket::Overdue)
+                         < plannedBucketRank(PlannedBucket::Today)
+                     && plannedBucketRank(PlannedBucket::Today)
+                            < plannedBucketRank(PlannedBucket::Tomorrow)
+                     && plannedBucketRank(PlannedBucket::Later)
+                            < plannedBucketRank(PlannedBucket::NoDate),
+                     "桶的排序主键按显示顺序递增");
+
+    // 日期换算本身
+    testutil::expect(civilDayNumber(1970, 1, 1) == 0, "1970-01-01 是第 0 天");
+    testutil::expect(weekdayFromDayNumber(0) == 3, "1970-01-01 是周四");
+    testutil::expect(civilDayNumber(2026, 11, 8) - civilDayNumber(2026, 11, 7) == 1,
+                     "相邻两天相差 1");
+}
+
 void testVector() {
     section("Vector<T>");
 
@@ -1955,6 +2031,7 @@ int main(int argc, char *argv[]) {
         out << "（过滤：" << filter << "）\n";
     }
 
+if (wants("PlannedBucket")) testPlannedBucket();
     if (wants("Vector")) testVector();
     if (wants("Stack")) testStack();
     if (wants("Trie")) testTrie();

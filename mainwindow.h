@@ -240,7 +240,7 @@ private:
     bool m_dbReady = false;
 
     // 当前视图状态
-    SortMode m_sortMode = SortCreatedAsc;
+    SortMode m_sortMode = SortManual;      // F-007：默认手动（新建置顶）
     bool m_hideDoneChecked = false;
     // 左侧栏决定的视图：要么看某个智能视图，要么看某个列表。
     bool m_useSmartView = true;
@@ -258,6 +258,8 @@ private:
     // 数据结构可视化面板（非模态，随时可刷新）。
     TaskVisualizer *m_visualizer = nullptr;
     int m_expandedId = -1;
+    // 计划内各分组的折叠状态，位序 = plannedBucketRank()
+    int m_collapsedBucketMask = 0;
     bool m_buildingList = false;
     // 单击/双击判定：第一次按下立即执行单击（跟手）；双击窗口内再按下同一条
     // => 双击，此时把展开状态还原成双击之前的样子，做到「双击只改状态」。
@@ -327,6 +329,11 @@ private:
     void setupReminder();
 
     void refreshList();
+
+    // --- F-007：计划内按时间分桶 ---
+    void appendBucketHeader(PlannedBucket bucket, int count);
+    bool isBucketCollapsed(PlannedBucket bucket) const;
+    void toggleBucketCollapsed(PlannedBucket bucket);
     // 推进「进行中」任务的光效动画（一个定时器驱动全部行）。
     void tickGlow();
     // 当前是否有「进行中」的任务（决定主窗口要不要画流动光效）。
@@ -343,6 +350,8 @@ private:
     void updateSortButton();
     // 落库并刷新列表（两个新建窗口共用）。
     void createTask(const Task& task);
+    // F-007：新建任务置顶 —— 把 manualOrder 设成当前最小值减一
+    Task withTopOrder(Task task) const;
     // 双击：按 待办 → 进行中 → 已完成 → 待办 推进。
     void advanceStatus(int id);
     // 延迟到事件循环下一轮再推进状态。双击必须用这个：advanceStatus 会重建
