@@ -39,6 +39,8 @@ set(CYSC_CORE_SOURCES
     src/core/DocumentStore.h
     src/core/StoragePaths.cpp
     src/core/StoragePaths.h
+    src/core/Autostart.cpp
+    src/core/Autostart.h
     src/ui/Theme.cpp
     src/ui/Theme.h
 )

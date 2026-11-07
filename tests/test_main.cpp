@@ -5,6 +5,7 @@
 //  process exits non-zero if any of them failed.
 // ============================================================================
 
+#include "src/core/Autostart.h"
 #include "src/core/StoragePaths.h"
 #include "src/ds/HashTable.h"
 #include "src/ds/SegmentTree.h"
@@ -23,6 +24,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSet>
+#include <QSettings>
 #include <QString>
 #include <QTextStream>
 
@@ -298,6 +300,64 @@ void testTrie() {
     assigned = trie;
     expect(assigned.getWordsWithPrefix("write").size() == 2,
           "copy assignment reproduces the contents");
+}
+
+
+// ---------------------------------------------------------------- 开机自启
+//
+// 测试把"系统存储"重定向到一个临时 INI 文件（Windows）或临时 plist 路径
+// （macOS），绝不碰真实注册表 —— 跑测试不该改用户的系统设置。
+
+void testAutostart() {
+    testutil::section("开机自启 (Autostart)");
+
+    const QString store = QString::fromStdString(testutil::tempDbPath("autostart_store.ini"));
+    QFile::remove(store);
+    Autostart::setStorageOverrideForTests(store);
+
+    testutil::expect(Autostart::storageOverrideForTests() == store, "测试存储重定向生效");
+
+    // 命令行必须是带引号的绝对路径：路径里有空格（"deepseek workplace"）
+    // 时不加引号，开机时会被当成分隔符，启动直接失败。
+    const QString command = Autostart::commandLine();
+    testutil::expect(command.startsWith(QLatin1Char('"')) && command.endsWith(QLatin1Char('"')),
+                     "登记的命令行整体带引号");
+    testutil::expect(command.contains(QDir::toNativeSeparators(
+                         QCoreApplication::applicationFilePath())),
+                     "命令行指向当前可执行文件（路径已转成平台原生分隔符）");
+
+    if (!Autostart::isSupported()) {
+        // Linux 等平台：明确不支持，不能默默写一半
+        testutil::expect(!Autostart::setEnabled(true), "不支持的平台返回失败");
+        testutil::expect(!Autostart::isEnabled(), "不支持的平台不会变成已启用");
+        Autostart::setStorageOverrideForTests(QString());
+        return;
+    }
+
+    // 先确保是关闭状态
+    Autostart::setEnabled(false);
+    testutil::expect(!Autostart::isEnabled(), "初始状态是关闭");
+
+    testutil::expect(Autostart::setEnabled(true), "开启成功");
+    testutil::expect(Autostart::isEnabled(), "开启后查询到已启用");
+    testutil::expect(QFile::exists(store), "登记写到了预期的存储位置");
+
+    // 值里应有带引号的可执行文件路径
+    {
+        QSettings s(store, QSettings::IniFormat);
+        const QStringList keys = s.allKeys();
+        testutil::expect(!keys.isEmpty(), "存储里至少有一个登记项");
+        bool foundQuoted = false;
+        for (const QString &key : keys) {
+            if (s.value(key).toString().startsWith(QLatin1Char('"'))) foundQuoted = true;
+        }
+        testutil::expect(foundQuoted, "登记的命令行带引号（路径含空格时才不会断）");
+    }
+
+    testutil::expect(Autostart::setEnabled(false), "关闭成功");
+    testutil::expect(!Autostart::isEnabled(), "关闭后查询到未启用");
+
+    Autostart::setStorageOverrideForTests(QString());
 }
 
 // -------------------------------------------------- TaskModel without a database
@@ -2043,6 +2103,7 @@ if (wants("PlannedBucket")) testPlannedBucket();
     if (wants("TaskImporter")) testTaskImporter();
     if (wants("TaskDraft")) testTaskDraft();
     if (wants("TaskModel")) { testModelInMemory(); testModelPersistence(); }
+    if (wants("Autostart")) testAutostart();
     if (wants("StoragePaths")) testStoragePaths();
     if (wants("DatabaseFailure")) testDatabaseFailure();
 

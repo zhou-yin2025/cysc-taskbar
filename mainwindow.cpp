@@ -6,6 +6,7 @@
 // ============================================================================
 
 #include "mainwindow.h"
+#include "src/core/Autostart.h"
 #include "src/core/StoragePaths.h"
 #include "src/widgets/TaskDialog.h"
 #include "src/widgets/TaskGroupDialog.h"
@@ -5448,6 +5449,54 @@ static int run() {
         }
         window->m_doc.removeTask(doingId);
         window->refreshList();
+    }
+
+    // ================= 开机自启（F-001）=================
+    {
+        // 把系统存储重定向到临时文件：--guitest 绝不能碰用户真实的 Run 键。
+        // 注意用测试临时目录而不是 %TEMP%：这台机器上 %TEMP% 不可写，
+        // 写在那儿会静默失败，断言看起来就像"功能没实现"。
+        const QString tmpDir = qEnvironmentVariable("CYSC_TEST_TMPDIR",
+                                                    QDir::currentPath());
+        const QString store =
+            QDir(tmpDir).absoluteFilePath("cysc_guitest_autostart.ini");
+        QFile::remove(store);
+        Autostart::setStorageOverrideForTests(store);
+        Autostart::setEnabled(false);
+
+        TaskSettingsDialog dlg(window);
+        QCheckBox *autostartBox = nullptr;
+        for (QCheckBox *box : dlg.findChildren<QCheckBox*>()) {
+            if (box->text().startsWith(QString::fromUtf8("开机自动启动"))) autostartBox = box;
+        }
+        check(autostartBox != nullptr, "设置里有「开机自动启动」勾选项");
+        check(autostartBox && !autostartBox->isChecked(), "开机自启默认关闭");
+        if (Autostart::isSupported()) {
+            check(autostartBox && autostartBox->isEnabled(), "支持的平台上勾选框可用");
+        }
+
+        if (autostartBox && autostartBox->isEnabled()) {
+            autostartBox->setChecked(true);
+            // accept() 是 protected，但 saveToSettings() 是 public 且正是它做的事，
+            // 直接调它验证「勾选后写系统登记」这一步。
+            dlg.saveToSettings();
+            check(Autostart::isEnabled(), "勾选并确定后写入了系统登记");
+            check(QFile::exists(store), "登记写到了重定向的存储位置");
+
+            // 再打开一次：勾选状态必须从系统真实状态读回来
+            TaskSettingsDialog again(window);
+            QCheckBox *againBox = nullptr;
+            for (QCheckBox *box : again.findChildren<QCheckBox*>()) {
+                if (box->text().startsWith(QString::fromUtf8("开机自动启动"))) againBox = box;
+            }
+            check(againBox && againBox->isChecked(), "重新打开时勾选状态被读回");
+
+            Autostart::setEnabled(false);
+            check(!Autostart::isEnabled(), "取消后系统登记被移除");
+        }
+
+        Autostart::setStorageOverrideForTests(QString());
+        QFile::remove(store);
     }
 
     // ================= 主题 =================

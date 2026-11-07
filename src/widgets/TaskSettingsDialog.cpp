@@ -8,6 +8,8 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
+#include "src/core/Autostart.h"
+
 #include <QSettings>
 #include <QVBoxLayout>
 
@@ -19,6 +21,7 @@ const char *TaskSettingsDialog::kOnTop = "window/onTop";
 const char *TaskSettingsDialog::kDensity = "view/density";
 const char *TaskSettingsDialog::kScale = "view/scale";
 const char *TaskSettingsDialog::kConfirmDelete = "view/confirmDelete";
+const char *TaskSettingsDialog::kAutostart = "app/autostart";
 const char *TaskSettingsDialog::kPlannedCollapsed = "planned/collapsedMask";
 
 bool TaskSettingsDialog::boolValue(const char *key, bool fallback) {
@@ -97,6 +100,17 @@ TaskSettingsDialog::TaskSettingsDialog(QWidget *parent) : QDialog(parent) {
     m_onTop->setToolTip("等同于标题栏的图钉按钮");
     root->addWidget(m_onTop);
 
+    // 开机自启（F-001）：默认关闭，勾了才写系统登记
+    m_autostart = new QCheckBox("开机自动启动（到点提醒才靠谱）", this);
+    m_autostart->setToolTip(
+        "登录系统时自动启动本程序。提醒依赖进程在跑，不开机自启的话，"
+        "不打开程序就收不到任何提醒。");
+    if (!Autostart::isSupported()) {
+        m_autostart->setEnabled(false);
+        m_autostart->setToolTip("当前平台不支持自动启动");
+    }
+    root->addWidget(m_autostart);
+
     m_compact = new QCheckBox("紧凑模式（只显示任务）", this);
     m_compact->setToolTip("等同于工具栏的 ⊡ 按钮；开启后会吸附到屏幕右上角");
     root->addWidget(m_compact);
@@ -123,6 +137,11 @@ void TaskSettingsDialog::loadFromSettings() {
     m_scale->setCurrentIndex(qBound(0, intValue(kScale, 2), 4));
     m_onTop->setChecked(boolValue(kOnTop, true));
     m_compact->setChecked(boolValue(kCompact, false));
+    // 开机自启以系统真实状态为准：用户可能在系统设置里手动关掉过，
+    // 配置文件里的旧值不可信。
+    if (m_autostart && Autostart::isSupported()) {
+        m_autostart->setChecked(Autostart::isEnabled());
+    }
 }
 
 void TaskSettingsDialog::saveToSettings() {
@@ -135,6 +154,19 @@ void TaskSettingsDialog::saveToSettings() {
     s.setValue(kScale, m_scale->currentIndex());
     s.setValue(kOnTop, m_onTop->isChecked());
     s.setValue(kCompact, m_compact->isChecked());
+    // 开机自启：只有状态真的变了才去动系统登记（写注册表 / plist）
+    if (m_autostart && m_autostart->isEnabled()) {
+        const bool want = m_autostart->isChecked();
+        if (want != Autostart::isEnabled()) {
+            s.setValue(kAutostart, want);
+            if (!Autostart::setEnabled(want)) {
+                // 写系统失败（权限等）时回滚勾选，别让用户以为已经设好了
+                s.setValue(kAutostart, Autostart::isEnabled());
+                m_autostart->setChecked(Autostart::isEnabled());
+            }
+        }
+    }
+
     // 主题由 ThemeManager 自己写（它持有 key），这里只切当前索引
     ThemeManager::setCurrentIndex(m_theme->currentIndex());
     ThemeManager::saveToSettings();

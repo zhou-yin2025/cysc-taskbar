@@ -38,6 +38,7 @@ public:
     static const char *kScale;          // 界面缩放档位：0=100% 1=125% 2=150% 3=175% 4=200%
     static const char *kConfirmDelete;  // 删除任务前确认
     static const char *kPlannedCollapsed;  // 计划内各分组的折叠状态（位掩码，F-007）
+    static const char *kAutostart;      // 开机自启（F-001；系统状态才是真值）
 
     static bool boolValue(const char *key, bool fallback);
     static int intValue(const char *key, int fallback);
@@ -52,6 +53,7 @@ private:
     QCheckBox *m_compact = nullptr;
     QCheckBox *m_onTop = nullptr;
     QCheckBox *m_confirmDelete = nullptr;
+    QCheckBox *m_autostart = nullptr;
     QComboBox *m_density = nullptr;
     QComboBox *m_scale = nullptr;
     QComboBox *m_theme = nullptr;
