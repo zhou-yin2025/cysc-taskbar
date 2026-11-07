@@ -380,7 +380,7 @@ private:
     void ensureGlowRunning();
     // 就地展开/收起详情区：只改行高与可见性，不重建列表。
     void applyExpansion();
-    // 双击后把展开状态还原成双击之前的样子（双击只改状态）。
+    // 双击后把展开状态还原成双击之前的样子（双击不再改状态，等价于什么都不做）。
     void restoreExpansionAfterDoubleClick() {
         m_expandedId = m_expandedBeforeDoubleClick;
         applyExpansion();
@@ -398,6 +398,10 @@ private:
     // 整个列表，而双击那一刻 Qt 还在派发鼠标事件给列表项，立刻重建会把正在
     // 派发的列表项删掉，导致闪退。
     void advanceStatusDeferred(int id);
+    // 点行首状态圆：标完成 / 取消完成（F-003 之后双击不再改状态）
+    void toggleDone(int id);
+    // 鼠标位置是否落在该行的状态圆上（行控件对鼠标是穿透的，只能按几何判断）
+    bool isGlyphHit(QListWidgetItem *item, const QPoint &viewportPos) const;
     // 就地替换某一行的控件（不 clear 列表）。凡是由「列表项上的交互」触发的
     // 刷新都必须走这条路径，否则会把正在派发事件的列表项删掉 -> 闪退。
     void refreshRow(int taskId);

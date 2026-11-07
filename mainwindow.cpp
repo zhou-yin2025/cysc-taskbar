@@ -219,38 +219,28 @@ QString statusChipStyle(int status) {
 } // namespace
 
 namespace {
-// 任务标题标签。除了显示文字，还负责画「完成时的画线动画」。
+// 任务标题标签：完成时画一条删除线。
 //
-// 为什么不用样式表的 text-decoration: line-through：
-//   样式表只能"有/没有"删除线，做不出从左到右画过去的过程。
-//   所以删除线一律由这个类自己画（rowStyleSheet 里已去掉 text-decoration），
-//   动画时按进度只画一部分，画完就是完整删除线。
+// 为什么自己画而不用样式表的 text-decoration：这条线要**恰好压在文字上**，
+// 而且要能按文字实际宽度铺满；样式表给的行高与线位置不受控。
+//
+// 说明（2026-11-07 调整）：原来完成时会从左往右"画"一遍删除线，实机看下来
+// 观感反而拖沓，用户要求去掉动画、直接显示整条线。所以现在 setStrikeOn(true)
+// 就是画满，tickStrike() 保留为空实现（只为兼容旧调用点）。
 class StrikeLabel : public QLabel {
 public:
     explicit StrikeLabel(QWidget *parent = nullptr) : QLabel(parent) {}
 
-    // 是否有删除线（动画中或已完成都算）。
     void setStrikeOn(bool on) {
         if (m_on == on) return;
         m_on = on;
-        m_progress = on ? 0.0 : 0.0;
-        m_animating = on;
+        m_progress = on ? 1.0 : 0.0;      // 直接满/无，不做动画
         update();
     }
     bool strikeOn() const { return m_on; }
-    bool strikeAnimating() const { return m_animating; }
-
-    // 由主窗口的共享定时器推进；返回 true 表示还在动画中。
-    bool tickStrike(qreal step) {
-        if (!m_animating) return false;
-        m_progress += step;
-        if (m_progress >= 1.0) {
-            m_progress = 1.0;
-            m_animating = false;
-        }
-        update();
-        return m_animating;
-    }
+    // 删除线一直是"画完"状态，所以永远不在动画中。
+    bool strikeAnimating() const { return false; }
+    bool tickStrike(qreal) { return false; }
     qreal strikeProgress() const { return m_progress; }
 
 protected:
@@ -962,18 +952,9 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
                                .arg(QString::fromStdString(task.deadline)));
     h->addWidget(titleLabel, 1);
 
-    // 「完成」时画线动画 / 已完成的常驻删除线。
-    //
-    // 判定顺序很重要：先看"刚被标记完成"（m_strikeAnimateIds），那种要从 0 开始
-    // 播一次动画；否则（打开程序时就已经完成的历史任务）直接画满，不播动画，
-    // 免得每次刷新都看到一堆线在那里画。
+    // 已完成 -> 删除线直接画满（不再播「从左往右画」的动画）
     if (task.status == 2) {
-        if (m_strikeAnimateIds.contains(task.id)) {
-            titleLabel->setStrikeOn(true);       // 进度从 0 开始 -> 会播动画
-        } else {
-            titleLabel->setStrikeOn(true);
-            titleLabel->tickStrike(1.0);         // 直接画满
-        }
+        titleLabel->setStrikeOn(true);
     }
 
     // 星标在最右（To Do 的排法）；没星标就不占位
@@ -1092,7 +1073,7 @@ QWidget *MainWindow::createDetailEditor(const Task& task) {
 
     // 当前状态用同样的配色显示，方便对照（双击任务行可推进状态）。
     QLabel *statusChip = new QLabel(
-        QString("状态：%1　（双击任务行切换）").arg(taskStatusText(task.status)), panel);
+        QString("状态：%1　（点行首圆点标完成，右键可改状态）").arg(taskStatusText(task.status)), panel);
     statusChip->setStyleSheet(statusChipStyle(task.status));
     statusChip->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     layout->addWidget(statusChip);
@@ -1766,8 +1747,6 @@ void MainWindow::ensureGlowRunning() {
         auto *taskRow = dynamic_cast<TaskRowWidget*>(row);
         if (taskRow && taskRow->glowing()) any = true;
     }
-    // 有待播的「完成画线」动画时也要让定时器跑起来
-    if (!m_strikeAnimateIds.isEmpty()) any = true;
     if (any && !m_glowTimer->isActive()) m_glowTimer->start();
     else if (!any && m_glowTimer->isActive()) m_glowTimer->stop();
 }
@@ -1799,26 +1778,6 @@ void MainWindow::tickGlow() {
     }
     // 主窗口边框也要跟着重画（有进行中任务时那道绕行的光）
     if (hasDoingTask()) update();
-
-    // 推进「完成画线」动画。只遍历可见行的标签，画完自然停。
-    // 注意用 dynamic_cast 而不是 findChildren<StrikeLabel*>：后者要求类型带
-    // Q_OBJECT（StrikeLabel 是纯 C++ 子类，没加），编译期就会静态断言失败。
-    bool strikeRunning = false;
-    for (int i = 0; i < m_taskList->count(); ++i) {
-        QWidget *row = m_taskList->itemWidget(m_taskList->item(i));
-        if (!row) continue;
-        for (QLabel *l : row->findChildren<QLabel*>()) {
-            if (auto *sl = dynamic_cast<StrikeLabel*>(l)) {
-                if (sl->tickStrike(0.10)) strikeRunning = true;
-            }
-        }
-    }
-    if (strikeRunning) {
-        any = true;
-    } else {
-        // 没有在画的就清掉待播名单，免得下次刷新又播一遍
-        if (!m_strikeAnimateIds.isEmpty()) m_strikeAnimateIds.clear();
-    }
 
     // 全部结束时由 ensureGlowRunning() 负责停表，别白烧 CPU。
     Q_UNUSED(any);
@@ -2117,23 +2076,18 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 
     switch (event->type()) {
         case QEvent::MouseButtonDblClick: {
-            // Qt 对第二次按下发的是 DblClick 而不是第二次 Press，所以双击在这里
-            // 判定。双击**只改状态，不动详情栏**：把第一次单击造成的展开/收起
-            // 还原成双击之前的样子。
+            // 双击**不再改状态**（2026-11-07 调整：双击切状态的观感不好，
+            // 改成点行首的状态圆来标记完成）。这里只把事件吞掉，免得列表
+            // 把它当成第二次点击又展开/收起一遍。
             QMouseEvent *mouse = static_cast<QMouseEvent*>(event);
             if (mouse->button() != Qt::LeftButton) break;
-            QListWidgetItem *item = m_taskList->itemAt(mouse->position().toPoint());
-            if (!item) break;
-
-            const int id = item->data(Qt::UserRole).toInt();
             if (m_clickTimer) m_clickTimer->stop();
             m_clickWindowOpen = false;
             m_pendingClickId = -1;
+            // 双击「什么也不做」：把第一次单击造成的展开还原回去，
+            // 否则双击会连带把行摊开，看起来像双击有副作用。
             restoreExpansionAfterDoubleClick();
-            // 必须延迟：改状态会重建整个列表，而此刻 Qt 还在派发这个事件。
-            // 直接调用会把正在派发的 item 删掉，后面 QListWidget 继续用它 -> 闪退。
-            advanceStatusDeferred(id);
-            return true;                // 消费掉，别再让列表处理一次
+            return true;
         }
 
         case QEvent::MouseButtonPress: {
@@ -2143,7 +2097,20 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
             if (!item) break;
 
             const int id = item->data(Qt::UserRole).toInt();
-            // 记下按下的这一条：若用户接着拖动，dropEvent 需要知道被拖的是谁。
+
+            // 点行首的状态圆 = 标记完成 / 取消完成。
+            // 必须走延迟：applyStatus 之后会重建这一行，而此刻 Qt 还在派发事件，
+            // 直接重建会把正在使用的 item 删掉（以前踩过闪退）。
+            if (id >= 0 && isGlyphHit(item, mouse->position().toPoint())) {
+                if (m_clickTimer) m_clickTimer->stop();
+                m_clickWindowOpen = false;
+                m_pendingClickId = -1;
+                m_pendingExpandId = -1;
+                QTimer::singleShot(0, this, [this, id]() { toggleDone(id); });
+                return true;
+            }
+
+            // 记下按下的这一条：若用户接着拖动，dropEvent 需要知道拖的是谁。
             m_draggingTaskId = id;
             // 双击窗口内又按了同一条 => 双击（有些平台会发两次 Press）。
             if (m_pendingClickId == id && m_clickWindowOpen) {
@@ -2151,8 +2118,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
                 m_clickWindowOpen = false;
                 m_pendingClickId = -1;
                 restoreExpansionAfterDoubleClick();
-                advanceStatusDeferred(id);
-                return true;            // 同上：必须延迟，且不要再往下走
+                return true;            // 双击不再改状态，只还原展开状态
             }
 
             // 单击：**延迟**展开。
@@ -2244,6 +2210,44 @@ bool MainWindow::applyStatus(int id, int status) {
     return persistDocument();
 }
 
+// 鼠标点是否落在某一行的「状态圆」上。
+//
+// 行控件在折叠状态下是 WA_TransparentForMouseEvents（鼠标事件穿透到列表视口），
+// 子控件同样收不到事件，所以只能在这里按几何位置判定。
+bool MainWindow::isGlyphHit(QListWidgetItem *item, const QPoint &viewportPos) const {
+    if (!item || !m_taskList) return false;
+    QWidget *row = m_taskList->itemWidget(item);
+    if (!row) return false;
+
+    const QPoint inRow = row->mapFrom(m_taskList->viewport(), viewportPos);
+    for (QWidget *child : row->findChildren<QWidget *>()) {
+        if (child->objectName() != QLatin1String("rowGlyph")) continue;
+        const QRect rect(child->mapTo(row, QPoint(0, 0)), child->size());
+        if (rect.contains(inRow)) return true;
+    }
+    return false;
+}
+
+// 点状态圆：未完成 -> 已完成；已完成 -> 回到待办。
+void MainWindow::toggleDone(int id) {
+    const Task *task = m_doc.findTask(id);
+    if (!task) return;
+
+    const int from = task->status;
+    const int to = (from == 2) ? 0 : 2;
+    const QString title = QString::fromStdString(task->title);
+
+    if (!applyStatus(id, to)) {
+        setStatusMessage("状态修改失败（数据库错误）", true);
+        return;
+    }
+    refreshRow(id);
+    setStatusMessage(QString("「%1」：%2 → %3")
+                         .arg(title)
+                         .arg(taskStatusText(from))
+                         .arg(taskStatusText(to)));
+}
+
 void MainWindow::advanceStatus(int id) {
     const Task *task = m_doc.findTask(id);
     if (!task) return;
@@ -2256,11 +2260,6 @@ void MainWindow::advanceStatus(int id) {
         setStatusMessage("状态修改失败（数据库错误）", true);
         return;
     }
-    // 记下"这一条刚被标记完成"，重建行时给它播一次画线动画。
-    // 用集合而不是布尔：底部可能同时有多条在播。
-    if (next == 2) m_strikeAnimateIds.insert(id);
-    else m_strikeAnimateIds.remove(id);
-
     // 只重建这一行，不清空整个列表 —— 见 refreshRow() 里的说明。
     refreshRow(id);
     // 动画要靠光效那个定时器推进，这里确保它跑起来
@@ -2461,7 +2460,13 @@ void MainWindow::onImportFromPaste() {
     bool ok = false;
     const QString text = QInputDialog::getMultiLineText(
         this, "粘贴文本导入",
-        "把任务文本粘到这里。每行写作「键：值」，用「任务名：」分隔多个任务：",
+        "把任务文本粘到这里。每行一个「键：值」，用「任务名：」开始新任务：\n\n"
+        "任务名：阅读\n"
+        "截止时间：2026/12/30 18:00\n"
+        "紧急度：4\n"
+        "步骤：党章\n\n"
+        "支持的键：任务名 / 备注 / 步骤 / 截止时间 / 提醒 / 紧急度 / 标签 / 列表。\n"
+        "导入前会先弹出预览，可以逐条勾选。",
         QString(), &ok);
     if (!ok || text.trimmed().isEmpty()) return;
     runImport(text, "粘贴的文本");
@@ -3425,6 +3430,16 @@ void MainWindow::applyThemeToWidgets() {
                 .arg(ThemeManager::hex(th.toolbarBg), ThemeManager::hex(th.accent),
                      ThemeManager::hex(th.onAccent)));
     }
+    // 导入按钮和「新建」同一套配色。它原来只在构造时设了一次样式，
+    // 换主题后颜色不跟着变（实机看出来的：谷地主题下还是旧色）。
+    if (m_importButton) {
+        m_importButton->setStyleSheet(
+            QString("QPushButton { background-color: %1; color: %2; border: 1px solid %2; "
+                    "padding: 0 8px; font-size: 11px; }"
+                    "QPushButton:hover { background-color: %2; color: %3; }")
+                .arg(ThemeManager::hex(th.toolbarBg), ThemeManager::hex(th.accent),
+                     ThemeManager::hex(th.onAccent)));
+    }
     if (m_visualizeButton) {
         m_visualizeButton->setStyleSheet(
             QString("QPushButton { background-color: %1; color: %2; border: 1px solid %2; "
@@ -4056,33 +4071,38 @@ static int run() {
     check(detailOf(0) == nullptr || !detailOf(0)->isVisible(), "收起后详情区隐藏");
     check(window->m_taskList->count() == 3, "收起后列表条数不变");
 
-    // --- 状态循环本身（直接驱动槽函数，快速覆盖三态轮转）---
-    // 注意：双击改状态是**延迟到事件循环下一轮**执行的（advanceStatusDeferred）。
-    // 这不是为了"稍后再改"，而是因为立刻改需要重建列表，而重建会把正在派发
-    // 这个双击事件的列表项删掉 —— 那正是"双击任务就闪退"的根因。
-    // 所以这里必须把待处理事件跑掉，才能看到状态已经变了。
-    auto doubleClickSlot = [window](int id) {
+    // --- 状态切换：点行首的状态圆（双击改状态已取消）---
+    // 走真实路径：在状态圆中心投一个鼠标按下事件，验证「标完成 / 取消完成」。
+    // 注意状态变更是延迟到事件循环下一轮执行的（要重建这一行，不能当场删 item），
+    // 所以必须把待处理事件跑掉才能看到结果。
+    auto clickGlyph = [window](int id) -> bool {
         for (int i = 0; i < window->m_taskList->count(); ++i) {
             QListWidgetItem *item = window->m_taskList->item(i);
-            if (item->data(Qt::UserRole).toInt() == id) {
-                window->onItemDoubleClicked(item);
-                QCoreApplication::processEvents();   // 让延迟的状态变更落地
-                return;
+            if (item->data(Qt::UserRole).toInt() != id) continue;
+            QWidget *row = window->m_taskList->itemWidget(item);
+            if (!row) return false;
+            for (QWidget *child : row->findChildren<QWidget*>()) {
+                if (child->objectName() != "rowGlyph") continue;
+                const QPoint center = child->mapTo(window->m_taskList->viewport(),
+                                                   child->rect().center());
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(center),
+                                  QPointF(window->m_taskList->viewport()->mapToGlobal(center)),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(window->m_taskList->viewport(), &press);
+                QCoreApplication::processEvents();
+                return true;
             }
         }
+        return false;
     };
     const int listCountBefore = window->m_taskList->count();
-    doubleClickSlot(firstId);
-    check(window->m_doc.findTask(firstId)->status == 1, "状态轮转：待办 -> 进行中");
+    check(clickGlyph(firstId), "行首状态圆可以被点到");
+    check(window->m_doc.findTask(firstId)->status == 2, "点状态圆：待办 -> 已完成");
     // 关键回归：改状态后列表条数不变，说明没有 clear() 重建整个列表。
     check(window->m_taskList->count() == listCountBefore,
-          "改状态不会清空重建列表（清空会把正在派发事件的列表项删掉 -> 闪退）");
-    doubleClickSlot(firstId);
-    check(window->m_doc.findTask(firstId)->status == 2, "状态轮转：进行中 -> 已完成");
-    doubleClickSlot(firstId);
-    check(window->m_doc.findTask(firstId)->status == 0, "状态轮转：已完成 -> 回到待办");
-    check(window->m_taskList->count() == listCountBefore,
-          "三轮轮转后列表条数依然不变");
+          "点状态圆不会清空重建列表（清空会把正在派发事件的列表项删掉 -> 闪退）");
+    clickGlyph(firstId);
+    check(window->m_doc.findTask(firstId)->status == 0, "再点一下：已完成 -> 回到待办");
 
     // --- 搜索：标题 + 备注子串 ---
     window->m_search->setText("笔记");
@@ -4849,36 +4869,26 @@ static int run() {
             return -1;
         };
 
-        // (a) 收起状态下双击：推进状态，且不会把行摊开
+        // (a) 双击不再改状态（2026-11-07 调整：改成点行首的状态圆）
         window->expandTask(-1);
         {
-            const int before = window->m_doc.findTask(firstRowId())->status;
-            sendDoubleClick();
-            waitForClickTimeout();
             const int rowId = firstRowId();
-            const Task *after = window->m_doc.findTask(rowId);
-            check(after != nullptr, "双击后任务仍然存在");
-            check(after && after->status == nextStatusInCycle(before),
-                  "真实鼠标双击推进了任务状态");
-            check(window->m_expandedId == -1, "收起状态下双击不会把行摊开");
-        }
-
-        // (b) 已展开状态下双击：状态照推进，详情栏保持展开（不回退）
-        {
-            const int rowId = firstRowId();
-            window->expandTask(-1);
-            window->setExpandedTask(rowId);
-            check(window->m_expandedId == rowId, "先展开该任务");
-
             const int before = window->m_doc.findTask(rowId)->status;
             sendDoubleClick();
             waitForClickTimeout();
+            const Task *after = window->m_doc.findTask(rowId);
+            check(after != nullptr, "双击后任务仍然存在");
+            check(after && after->status == before, "双击不再推进任务状态");
+        }
 
-            check(window->m_doc.findTask(rowId)->status == nextStatusInCycle(before),
-                  "已展开时双击同样推进状态");
-            check(window->m_expandedId == rowId, "已展开时双击不会把详情栏收起");
-            check(window->m_expandedBeforeDoubleClick == rowId,
-                  "双击记住了「双击前是展开的」");
+        // (b) 双击也不该把行摊开/收起（它只是被吞掉）
+        {
+            const int rowId = firstRowId();
+            window->expandTask(-1);
+            check(window->m_expandedId == -1, "先确保是收起状态");
+            sendDoubleClick();
+            waitForClickTimeout();
+            check(window->m_expandedId == -1, "双击不会把行摊开");
         }
 
         // (c) 单击只切换详情栏，不改状态
@@ -5318,6 +5328,22 @@ static int run() {
               "设置窗口有多个可勾选项");
         check(!dlg.findChildren<QComboBox*>().isEmpty(), "设置窗口有行密度下拉");
 
+        // 主题下拉必须回填成「当前生效的主题」。曾经漏了这一步，每次打开都停在
+        // 第 0 项（晴空），用户以为设置没记住。
+        {
+            const int before = ThemeManager::currentIndex();
+            ThemeManager::setCurrentIndex(ThemeManager::count() - 1);   // 最后一款（谷地）
+            TaskSettingsDialog themeDlg(window);
+            QComboBox *themeCombo = nullptr;
+            for (QComboBox *combo : themeDlg.findChildren<QComboBox*>()) {
+                if (combo->count() == ThemeManager::count()) themeCombo = combo;
+            }
+            check(themeCombo != nullptr, "设置窗口里有主题下拉");
+            check(themeCombo && themeCombo->currentIndex() == ThemeManager::count() - 1,
+                  "主题下拉回填成当前主题（不是永远天蓝）");
+            ThemeManager::setCurrentIndex(before);
+        }
+
         // 写进去再读回来，必须一致（键名两边写错就会在这里暴露）
         {
             QSettings s;
@@ -5518,6 +5544,20 @@ static int run() {
         check(endfield.rowNumbers && endfield.contour && endfield.wideFont,
               "谷地开了行编号、等高线底纹与宽体小字");
         check(endfield.windowTop == endfield.windowBottom, "谷地是平面底，不用渐变");
+
+        // 导入按钮必须跟着主题换色（实机报过：换主题后它还是旧颜色）
+        {
+            const int beforeIdx = ThemeManager::currentIndex();
+            ThemeManager::setCurrentByKey(QStringLiteral("endfield"));
+            window->applyThemeToWidgets();
+            check(window->m_importButton != nullptr, "工具栏有导入按钮");
+            check(window->m_importButton
+                      && window->m_importButton->styleSheet().contains(
+                             ThemeManager::hex(ThemeManager::current().accent)),
+                  "导入按钮跟着主题换色");
+            ThemeManager::setCurrentIndex(beforeIdx);
+            window->applyThemeToWidgets();
+        }
         check(all[0].radius > 0 && all[1].radius > 0 && all[2].radius > 0,
               "其余三款仍然保留圆角");
 
@@ -5728,69 +5768,48 @@ static int run() {
         QCoreApplication::processEvents();
     }
 
-    // ================= 完成任务的「画线动画」 =================
+    // ================= 完成任务的删除线（静态，不再播动画） =================
+    // 2026-11-07 调整：原来标记完成时删除线会从左往右画一遍，实机观感拖沓，
+    // 改成直接显示整条线。这里锁住"标完成后立刻就是满线、且不再有动画状态"。
     {
-        // 造一条任务并推到「已完成」
-        const int doneId = window->m_doc.addTask([] {
-            Task t;
-            t.title = "画线动画测试";
-            t.listId = 1;
-            return t;
-        }());
+        Task t;
+        t.title = "删除线测试";
+        t.listId = window->m_doc.defaultListId();
+        const int doneId = window->m_doc.addTask(t);
         window->refreshList();
         QCoreApplication::processEvents();
 
-        window->applyStatus(doneId, 1);      // 先进行中
-        window->refreshList();
-        QCoreApplication::processEvents();
-        // 走和真实交互同一条路：applyStatus 只写模型，
-        // 标记"刚完成"这件事在 advanceStatus 里做。
-        window->m_strikeAnimateIds.insert(doneId);
-        window->applyStatus(doneId, 2);      // 再已完成 -> 应触发画线
+        window->applyStatus(doneId, 2);
         window->refreshList();
         QCoreApplication::processEvents();
 
-        // 找到这一行的标题标签
         StrikeLabel *title = nullptr;
-        for (int i = 0; i < window->m_taskList->count(); ++i) {
-            if (window->m_taskList->item(i)->data(Qt::UserRole).toInt() != doneId) continue;
-            QWidget *row = window->m_taskList->itemWidget(window->m_taskList->item(i));
-            if (!row) continue;
-            for (QLabel *l : row->findChildren<QLabel*>()) {
-                if (auto *sl = dynamic_cast<StrikeLabel*>(l)) title = sl;
+        for (int i = 0; i < window->m_taskList->count() && !title; ++i) {
+            QListWidgetItem *item = window->m_taskList->item(i);
+            if (item->data(Qt::UserRole).toInt() != doneId) continue;
+            if (QWidget *row = window->m_taskList->itemWidget(item)) {
+                for (QLabel *l : row->findChildren<QLabel*>()) {
+                    if (auto *sl = dynamic_cast<StrikeLabel*>(l)) title = sl;
+                }
             }
         }
-        check(title != nullptr, "标题标签是支持画线动画的控件");
+        check(title != nullptr, "已完成任务的标题标签还在");
         check(title && title->strikeOn(), "已完成的任务有删除线");
-        out << "  info 画线动画: 起始进度=" << (title ? title->strikeProgress() : -1.0)
-            << " 动画中=" << (title && title->strikeAnimating() ? 1 : 0) << "\n";
-        check(title && title->strikeAnimating(), "刚完成时画线动画正在播放");
-        check(title && title->strikeProgress() < 1.0, "画线动画是从左往右推进的（起点未满）");
+        check(title && !title->strikeAnimating(), "删除线不再播动画");
+        check(title && qAbs(title->strikeProgress() - 1.0) < 0.001, "删除线一开始就是满的");
 
-        // 推进几次，进度必须增长，最后停在全满
-        const qreal p0 = title ? title->strikeProgress() : 0.0;
-        if (title) {
-            for (int k = 0; k < 3; ++k) title->tickStrike(0.1);
-        }
-        const qreal p1 = title ? title->strikeProgress() : 0.0;
-        check(p1 > p0, "画线进度会随定时器推进");
-        if (title) {
-            for (int k = 0; k < 30; ++k) title->tickStrike(0.1);
-        }
-        check(title && !title->strikeAnimating(), "画完后动画停止（不会一直重绘）");
-        check(title && qAbs(title->strikeProgress() - 1.0) < 0.001, "画完后进度停在全满");
-
-        // 非完成状态不该有删除线
+        // 回到待办：删除线立刻消失
         window->applyStatus(doneId, 0);
         window->refreshList();
         QCoreApplication::processEvents();
         StrikeLabel *again = nullptr;
-        for (int i = 0; i < window->m_taskList->count(); ++i) {
-            if (window->m_taskList->item(i)->data(Qt::UserRole).toInt() != doneId) continue;
-            QWidget *row = window->m_taskList->itemWidget(window->m_taskList->item(i));
-            if (!row) continue;
-            for (QLabel *l : row->findChildren<QLabel*>()) {
-                if (auto *sl = dynamic_cast<StrikeLabel*>(l)) again = sl;
+        for (int i = 0; i < window->m_taskList->count() && !again; ++i) {
+            QListWidgetItem *item = window->m_taskList->item(i);
+            if (item->data(Qt::UserRole).toInt() != doneId) continue;
+            if (QWidget *row = window->m_taskList->itemWidget(item)) {
+                for (QLabel *l : row->findChildren<QLabel*>()) {
+                    if (auto *sl = dynamic_cast<StrikeLabel*>(l)) again = sl;
+                }
             }
         }
         check(again && !again->strikeOn(), "回到待办后删除线消失");
@@ -6283,6 +6302,25 @@ static int run() {
             "截止时间：2026/12/31\n";
         TaskImporter::ParseResult parsed = TaskImporter::parse(text);
         check(static_cast<int>(parsed.tasks.size()) == 3, "导入：解析出 3 条任务");
+
+        // 第一次用的人不知道能写哪些键 —— 预览窗口里要有可展开的格式说明
+        {
+            TaskImportDialog helpDlg(parsed, window->m_doc, "自检文本", window);
+            QPushButton *helpToggle = helpDlg.findChild<QPushButton*>("importHelpToggle");
+            QPlainTextEdit *helpText = helpDlg.findChild<QPlainTextEdit*>("importHelpText");
+            check(helpToggle != nullptr && helpText != nullptr, "导入预览里有格式说明");
+            // 用 isHidden() 而不是 isVisible()：对话框本身没 show，子控件的
+            // isVisible() 恒为 false，只能看「是否被显式隐藏」。
+            check(helpText && helpText->isHidden(), "格式说明默认收起");
+            if (helpToggle && helpText) {
+                helpToggle->click();
+                check(!helpText->isHidden(), "点「格式说明」后展开");
+                check(helpText->toPlainText().contains(QString::fromUtf8("任务名：")),
+                      "格式说明里有可直接照抄的示例");
+                check(helpText->toPlainText().contains(QString::fromUtf8("支持的键")),
+                      "格式说明里列了支持的键");
+            }
+        }
         check(parsed.countFatal() == 0, "导入：没有无法导入的条目");
 
         // 自己造一条同名任务：前面的段落中途会删数据，不能依赖它们留下的东西。

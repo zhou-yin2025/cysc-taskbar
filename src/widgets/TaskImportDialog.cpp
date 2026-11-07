@@ -59,6 +59,62 @@ TaskImportDialog::TaskImportDialog(const TaskImporter::ParseResult &parsed,
     title->setFont(titleFont);
     root->addWidget(title);
 
+    // ---- 格式说明（可折叠）----
+    // 第一次用的人不知道能写哪些键、日期怎么写，所以把「支持的键 + 一段可直接
+    // 粘的示例」放在最上面；默认收起，不占表格的地方。
+    QWidget *helpBox = new QWidget(this);
+    QVBoxLayout *helpLayout = new QVBoxLayout(helpBox);
+    helpLayout->setContentsMargins(0, 0, 0, 0);
+    helpLayout->setSpacing(4);
+
+    QPushButton *helpToggle = new QPushButton(QString::fromUtf8("格式说明 ▸"), helpBox);
+    helpToggle->setObjectName("importHelpToggle");
+    helpToggle->setCheckable(true);
+    helpToggle->setFlat(true);
+    helpToggle->setCursor(Qt::PointingHandCursor);
+    helpToggle->setStyleSheet(
+        QString("QPushButton { color: %1; border: none; text-align: left;"
+                " padding: 0; font-size: 10px; background: transparent; }")
+            .arg(ThemeManager::hex(theme.accentDim)));
+    helpLayout->addWidget(helpToggle);
+
+    QPlainTextEdit *helpText = new QPlainTextEdit(helpBox);
+    helpText->setObjectName("importHelpText");
+    helpText->setReadOnly(true);
+    helpText->setVisible(false);
+    helpText->setFixedHeight(168);
+    helpText->setStyleSheet(
+        QString("QPlainTextEdit { background-color: %1; color: %2; border: 1px solid %3;"
+                " font-size: 10px; }")
+            .arg(ThemeManager::hex(theme.toolbarBg), ThemeManager::hex(theme.cardTitleInk),
+                 ThemeManager::hex(theme.cardBorder)));
+    helpText->setPlainText(QString::fromUtf8(
+        "每行一个「键：值」，用「任务名：」开始一个新任务。可以直接存成 .txt 再导入。\n"
+        "\n"
+        "任务名：阅读\n"
+        "备注：党章和名著各读一章\n"
+        "步骤：党章\n"
+        "步骤：海底两万里\n"
+        "截止时间：2026/12/30 18:00\n"
+        "提醒：2026/12/29 20:00\n"
+        "紧急度：4\n"
+        "标签：阅读 学习\n"
+        "列表：阅读\n"
+        "\n"
+        "支持的键：任务名 / 备注 / 步骤 / 截止时间 / 提醒 / 紧急度 / 标签 / 列表\n"
+        "日期：2026/12/30、2026-12-30、2026年12月30日、12/30 都认；时间写 18:00 或 18点30分\n"
+        "只写日期时按当天 23:59 处理；认不出的字段会并入备注，并在下面的表格里标出来"));
+    helpLayout->addWidget(helpText);
+
+    connect(helpToggle, &QPushButton::toggled, this,
+            [helpToggle, helpText](bool on) {
+                helpText->setVisible(on);
+                helpToggle->setText(on ? QString::fromUtf8("格式说明 ▾")
+                                       : QString::fromUtf8("格式说明 ▸"));
+            });
+
+    root->addWidget(helpBox);
+
     // 重名标记：用文档同一套归一化规则判断，避免"两处说法不一致"。
     for (TaskImporter::ImportTask &t : m_parsed.tasks) {
         if (t.fatal || t.title.empty()) continue;

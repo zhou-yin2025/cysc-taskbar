@@ -50,7 +50,8 @@ TaskSettingsDialog::TaskSettingsDialog(QWidget *parent) : QDialog(parent) {
     for (int i = 0; i < ThemeManager::count(); ++i) {
         m_theme->addItem(ThemeManager::themes()[i].name);
     }
-    m_theme->setToolTip("切换整套配色：晴空（天蓝·白）/ 晚霞（金黄·橙）/ 玫瑰（玫红·浅灰·黑）");
+    m_theme->setToolTip("切换整套配色：晴空（天蓝·白）/ 晚霞（金黄·橙）/ "
+                        "玫瑰（玫红·浅灰·黑）/ 谷地（信号黄·工业）");
     themeForm->addRow("配色：", m_theme);
     root->addLayout(themeForm);
 
@@ -137,6 +138,10 @@ void TaskSettingsDialog::loadFromSettings() {
     m_scale->setCurrentIndex(qBound(0, intValue(kScale, 2), 4));
     m_onTop->setChecked(boolValue(kOnTop, true));
     m_compact->setChecked(boolValue(kCompact, false));
+    // 主题下拉必须反映**当前生效**的主题。原来这里漏了，每次打开都停在
+    // 第 0 项（晴空），用户会以为设置没记住 —— 其实是没回填。
+    m_theme->setCurrentIndex(qBound(0, ThemeManager::currentIndex(),
+                                   ThemeManager::count() - 1));
     // 开机自启以系统真实状态为准：用户可能在系统设置里手动关掉过，
     // 配置文件里的旧值不可信。
     if (m_autostart && Autostart::isSupported()) {
