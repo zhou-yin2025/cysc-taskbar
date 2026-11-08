@@ -112,6 +112,15 @@ public:
     // 把分组关系写回 TaskList::groupId（每个集合给一个稳定的分组号）。
     void syncGroupIds();
 
+    // ---- 分组名称 ----
+    // 分组成员关系仍由并查集维护（groupId = 组内最小的列表 id），这里额外给
+    // 每个分组一个可以改的名字。键就是 groupId；没起名时返回空串，
+    // 界面回退显示「分组 N」。
+    void setGroupName(int groupId, const std::string &name);
+    std::string groupName(int groupId) const;
+    // 持久化用：遍历所有已命名的分组。
+    const HashTable<int, std::string> &groupNames() const { return m_groupNames; }
+
     // ---- 哈希表：标签索引 ----
     const std::vector<std::string>& allTags() const { return m_tagNames; }
     std::vector<TagCount> tagCounts() const;            // 按出现次数降序
@@ -217,6 +226,8 @@ private:
     void refreshTagNames();
     int listIndexOf(int listId) const;
     void ensureGroupSets();
+    // 分组号变了（合并/删除最小 id）时，把名字迁移到新号上，并清掉废弃的
+    void pruneGroupNames(const std::vector<int> &oldGroupIds);
 
     std::vector<Task> m_tasks;
     std::vector<TaskList> m_lists;
@@ -244,6 +255,8 @@ private:
     Trie m_titleTrie;
     SegmentTree m_deadlineTree;
     UnionFind m_groups;
+    // 分组名：groupId -> 名字（并查集只管成员关系，名字单独记）
+    HashTable<int, std::string> m_groupNames;
     int m_groupSets = 0;
 
     std::vector<std::string> m_tagNames;

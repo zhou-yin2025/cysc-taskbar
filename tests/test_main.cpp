@@ -1167,6 +1167,62 @@ void testTaskDocument() {
         expect(doc.tasks().back().listId == doc.defaultListId(), "删除列表后任务迁移到默认列表");
     }
 
+    // ---------------- 分组名（可自定义，并且跟随分组号变化迁移） ----------------
+    {
+        TaskDocument doc;
+        const int a = doc.addList("甲");
+        const int b = doc.addList("乙");
+        const int c = doc.addList("丙");
+        const int d = doc.addList("丁");
+
+        expect(doc.joinListsIntoGroup(a, b), "甲和乙并成一组");
+        doc.syncGroupIds();
+        const int g1 = doc.findList(a)->groupId;
+        expect(g1 >= 0, "分组号已生成");
+        expect(doc.groupName(g1).empty(), "新分组默认没有名字（界面回退成「分组 N」）");
+
+        doc.setGroupName(g1, "读书");
+        expect(doc.groupName(g1) == "读书", "设了名字能读回来");
+
+        // 合并两个分组：新组号取两者里更小的列表 id，名字要跟过去
+        expect(doc.joinListsIntoGroup(c, d), "丙和丁并成另一组");
+        doc.syncGroupIds();
+        const int g2 = doc.findList(c)->groupId;
+        doc.setGroupName(g2, "工作");
+        expect(doc.groupName(g2) == "工作", "第二组也能命名");
+
+        // 把两组并起来
+        expect(doc.joinListsIntoGroup(b, c), "两个分组合并");
+        doc.syncGroupIds();
+        const int merged = doc.findList(a)->groupId;
+        expect(doc.findList(c)->groupId == merged, "合并后四张列表同一个分组号");
+        const std::string mergedName = doc.groupName(merged);
+        expect(mergedName == "读书" || mergedName == "工作",
+              "合并后保留其中一个分组的名字（不会丢成空）");
+
+        // 删掉组内 id 最小的列表：分组号会变，名字要迁移过去
+        int smallest = a;
+        for (int id : {b, c, d}) {
+            if (id < smallest) smallest = id;
+        }
+        const int before = doc.findList(a)->groupId;
+        const std::string nameBefore = doc.groupName(before);
+        doc.removeList(smallest);
+        // 分组号是「组内最小的列表 id」，删掉最小的那个之后要重算才会变。
+        // 存盘/读库都会走 syncGroupIds()，这里显式调一次来验证名字的迁移。
+        doc.syncGroupIds();
+        const TaskList *anyMember = nullptr;
+        for (const TaskList &l : doc.lists()) {
+            if (l.id != doc.defaultListId()) { anyMember = &l; break; }
+        }
+        expect(anyMember != nullptr, "删掉一个成员后还有剩下的成员");
+        if (anyMember) {
+            const int after = anyMember->groupId;
+            expect(after != before, "组内最小 id 被删，分组号跟着变");
+            expect(doc.groupName(after) == nameBefore, "名字迁移到了新的分组号上");
+        }
+    }
+
     // ---------------- 可视化面板依赖的只读统计 ----------------
     {
         // 哈希表：桶长分布 / 已用桶 / 探查长度

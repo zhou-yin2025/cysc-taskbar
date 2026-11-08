@@ -270,6 +270,13 @@ int TaskDocument::groupNumberCount() const {
 
 void TaskDocument::syncGroupIds() {
     ensureGroupSets();
+
+    // 先记下重算前的分组号：分组号是「组内最小列表 id」，删掉那个列表或合并分组
+    // 之后号会变，名字要据此迁移，否则改名一次就丢。
+    std::vector<int> oldGroupIds;
+    oldGroupIds.reserve(m_lists.size());
+    for (const TaskList &l : m_lists) oldGroupIds.push_back(l.groupId);
+
     // 分组号用「组内最小的列表 id」，而不是并查集的根下标：根下标依赖列表在
     // 数组里的位置，存取一轮或删掉一个列表就会整体错位。用列表 id 就稳定了。
     for (std::size_t i = 0; i < m_lists.size(); ++i) {
@@ -287,6 +294,59 @@ void TaskDocument::syncGroupIds() {
         m_lists[i].groupId = smallest;
     }
     m_groupSets = m_groups.setCount();
+    pruneGroupNames(oldGroupIds);
+}
+
+// 分组号变化后把名字接过去。
+//
+// 场景一（合并）：两个分组合成一个，新号取两者里更小的列表 id。若新号原本没
+// 名字、而组内某个列表的旧号有名字，就把那个名字继承过来（按旧号从小到大挑，
+// 相当于「以编号靠前的那个分组为准」）。
+// 场景二（删除）：组内最小的那个列表被删了，新号变成次小的列表 id，同理继承。
+// 最后把已经没有任何列表使用的分组名删掉，避免越积越多。
+void TaskDocument::pruneGroupNames(const std::vector<int> &oldGroupIds) {
+    if (m_groupNames.isEmpty()) return;
+
+    std::vector<int> alive;
+    for (const TaskList &l : m_lists) {
+        if (l.groupId >= 0) alive.push_back(l.groupId);
+    }
+    std::sort(alive.begin(), alive.end());
+    alive.erase(std::unique(alive.begin(), alive.end()), alive.end());
+
+    // 每个新分组号挑一个「成员里最小的旧号」
+    for (int id : alive) {
+        if (m_groupNames.contains(id)) continue;
+        int bestOld = -1;
+        for (std::size_t i = 0; i < m_lists.size(); ++i) {
+            if (m_lists[i].groupId != id) continue;
+            if (i >= oldGroupIds.size()) continue;
+            const int old = oldGroupIds[i];
+            if (old < 0 || !m_groupNames.contains(old)) continue;
+            if (bestOld < 0 || old < bestOld) bestOld = old;
+        }
+        if (bestOld >= 0) {
+            m_groupNames.insert(id, m_groupNames.value(bestOld, std::string()));
+        }
+    }
+
+    // 清掉不再对应任何分组的名字
+    for (int key : m_groupNames.keys()) {
+        if (std::find(alive.begin(), alive.end(), key) == alive.end()) {
+            m_groupNames.remove(key);
+        }
+    }
+}
+
+void TaskDocument::setGroupName(int groupId, const std::string &name) {
+    if (groupId < 0) return;
+    const std::string trimmed = normalizeTitle(name);
+    if (trimmed.empty()) m_groupNames.remove(groupId);
+    else m_groupNames.insert(groupId, trimmed);
+}
+
+std::string TaskDocument::groupName(int groupId) const {
+    return m_groupNames.value(groupId, std::string());
 }
 
 // ------------------------------------------------- 哈希表：标签倒排索引

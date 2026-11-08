@@ -230,6 +230,11 @@ private slots:
     void snapToTopRight();
     // 侧栏列表的编辑操作（右键菜单触发）。
     void onRenameList(int listId);
+    // 分组改名 / 解散分组（侧栏的组标题只发信号，改模型与落库在这里）
+    void onRenameGroup(int groupId);
+    void onDissolveGroup(int groupId);
+    // 侧栏里把列表拖到分组标题 / 另一张列表上
+    void onListDrop(int listId, int kind, int targetId);
     void onDeleteList(int listId);
     void onChangeListColor(int listId);
     void onRemoveListFromGroup(int listId);

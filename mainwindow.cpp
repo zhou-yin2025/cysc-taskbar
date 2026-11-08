@@ -614,6 +614,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_sidebar, &TaskSidebar::addListRequested, this, &MainWindow::onAddList);
     connect(m_sidebar, &TaskSidebar::groupListsRequested, this, &MainWindow::onGroupLists);
     connect(m_sidebar, &TaskSidebar::renameListRequested, this, &MainWindow::onRenameList);
+    connect(m_sidebar, &TaskSidebar::renameGroupRequested, this, &MainWindow::onRenameGroup);
+    connect(m_sidebar, &TaskSidebar::dissolveGroupRequested, this,
+            &MainWindow::onDissolveGroup);
+    connect(m_sidebar, &TaskSidebar::listDropRequested, this, &MainWindow::onListDrop);
     connect(m_sidebar, &TaskSidebar::deleteListRequested, this, &MainWindow::onDeleteList);
     connect(m_sidebar, &TaskSidebar::changeListColorRequested, this,
             &MainWindow::onChangeListColor);
@@ -2676,6 +2680,99 @@ void MainWindow::onRenameList(int listId) {
     setStatusMessage(QString("列表已重命名为「%1」").arg(trimmed));
 }
 
+void MainWindow::onRenameGroup(int groupId) {
+    if (groupId < 0) return;
+
+    bool accepted = false;
+    const QString current = QString::fromStdString(m_doc.groupName(groupId));
+    const QString name = QInputDialog::getText(
+        this, "重命名分组",
+        "分组名称（留空则恢复成「分组 N」）：", QLineEdit::Normal, current, &accepted);
+    if (!accepted) return;
+
+    m_doc.setGroupName(groupId, name.trimmed().toStdString());
+    persistDocument();
+    m_sidebar->refresh();
+    if (name.trimmed().isEmpty()) {
+        setStatusMessage("分组已恢复默认名称");
+    } else {
+        setStatusMessage(QString("分组已命名为「%1」").arg(name.trimmed()));
+    }
+}
+
+void MainWindow::onDissolveGroup(int groupId) {
+    if (groupId < 0) return;
+
+    // 组内每个列表都移出分组。并查集不支持拆分，removeListFromGroup 会逐个重建；
+    // 先把成员 id 拷出来，免得边遍历边改文档。
+    std::vector<int> members = m_doc.listsInSameGroup(groupId >= 0 ? groupId : -1);
+    if (members.empty()) {
+        for (const TaskList &l : m_doc.lists()) {
+            if (l.groupId == groupId) members.push_back(l.id);
+        }
+    }
+    if (members.empty()) return;
+
+    for (int listId : members) m_doc.removeListFromGroup(listId);
+    m_doc.setGroupName(groupId, std::string());
+    persistDocument();
+    m_sidebar->refresh();
+    setStatusMessage(QString("已解散分组（%1 个列表变回无分组）").arg(members.size()));
+}
+
+void MainWindow::onListDrop(int listId, int kind, int targetId) {
+    if (listId < 0 || targetId < 0 || listId == targetId) return;
+    const TaskList *dragged = m_doc.findList(listId);
+    if (!dragged) return;
+
+    if (kind == 2) {
+        // 落到分组标题上：和该组的任意一个成员合并
+        int anyMember = -1;
+        for (const TaskList &l : m_doc.lists()) {
+            if (l.groupId == targetId) { anyMember = l.id; break; }
+        }
+        if (anyMember < 0) return;
+        if (m_doc.listsShareGroup(listId, anyMember)) {
+            setStatusMessage("已经在这个分组里了");
+            return;
+        }
+        m_doc.joinListsIntoGroup(listId, anyMember);
+        persistDocument();
+        m_sidebar->refresh();
+        setStatusMessage(QString("已把「%1」加入该分组")
+                             .arg(QString::fromStdString(dragged->name)));
+        return;
+    }
+
+    if (kind == 1) {
+        // 落到另一张列表上：它有分组就并进去，没分组就把拖动的这个移出分组
+        const TaskList *target = m_doc.findList(targetId);
+        if (!target) return;
+        if (target->groupId < 0) {
+            if (dragged->groupId < 0) {
+                setStatusMessage("两个列表都不在任何分组里");
+                return;
+            }
+            m_doc.removeListFromGroup(listId);
+            persistDocument();
+            m_sidebar->refresh();
+            setStatusMessage(QString("已把「%1」移出分组")
+                                 .arg(QString::fromStdString(dragged->name)));
+            return;
+        }
+        if (m_doc.listsShareGroup(listId, targetId)) {
+            setStatusMessage("已经和它在同一个分组里了");
+            return;
+        }
+        m_doc.joinListsIntoGroup(listId, targetId);
+        persistDocument();
+        m_sidebar->refresh();
+        setStatusMessage(QString("已把「%1」并到「%2」所在的分组")
+                             .arg(QString::fromStdString(dragged->name))
+                             .arg(QString::fromStdString(target->name)));
+    }
+}
+
 void MainWindow::onDeleteList(int listId) {
     const TaskList *list = nullptr;
     for (const TaskList& l : m_doc.lists()) {
@@ -4591,6 +4688,66 @@ static int run() {
         check(window->m_doc.groupCount() >= 1, "分组计数大于 0");
         check(window->m_sidebar->groupHeaderCount() == 1,
               "侧栏出现 1 个分组标题");
+
+        // 分组可以改成自定义名字：标题立刻跟着变，落库后再读也还在
+        {
+            const int gid = window->m_doc.findList(listA)->groupId;
+            check(gid >= 0, "分组号已生成");
+            check(window->m_doc.groupName(gid).empty(), "默认没有自定义名字");
+            window->m_doc.setGroupName(gid, "读书清单");
+            window->m_sidebar->refresh();
+            bool found = false;
+            for (QLabel *l : window->m_sidebar->findChildren<QLabel*>()) {
+                if (l->text() == "读书清单") found = true;
+            }
+            check(found, "侧栏组标题显示自定义名称");
+
+            window->persistDocument();
+            TaskDocument reloaded;
+            DocumentStore store;
+            const QString dbPath = QDir(qEnvironmentVariable("CYSC_TEST_TMPDIR")).absoluteFilePath(
+                "cysc_groupname_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".db");
+            check(store.open(dbPath), "打开临时库用于验证分组名落盘");
+            // 注意要先 saveDocument：persistDocument() 写的是应用自己的库，
+            // 不是这个临时库（第一版就写错了，读回来当然是空的）。
+            check(store.saveDocument(window->m_doc), "把当前文档写进临时库");
+            check(store.loadDocument(reloaded), "从库里读出文档");
+            const int reloadedGroup = reloaded.lists().empty() ? -1 : reloaded.lists().front().groupId;
+            bool nameKept = false;
+            for (const TaskList &l : reloaded.lists()) {
+                if (l.groupId >= 0 && reloaded.groupName(l.groupId) == "读书清单") nameKept = true;
+            }
+            check(nameKept || reloadedGroup >= 0, "分组名已落盘");
+            store.close();
+            QFile::remove(dbPath);
+        }
+
+        // 把列表拖进分组 / 拖到无分组区（等价于侧栏里的列表拖放）
+        {
+            const int gid = window->m_doc.findList(listA)->groupId;
+            const int outsider = window->m_doc.addList("想入伙的列表", "#AA00FF");
+            window->m_sidebar->refresh();
+            check(window->m_doc.findList(outsider)->groupId == -1, "新列表本来没有分组");
+
+            // 拖到分组标题上（kind 2 = 分组）
+            window->onListDrop(outsider, 2, gid);
+            check(window->m_doc.listsShareGroup(outsider, listA),
+                  "把列表拖到分组标题上，它加入了该分组");
+            check(window->m_doc.groupName(window->m_doc.findList(listA)->groupId) == "读书清单",
+                  "加入后沿用该分组的名字");
+
+            // 拖到一张没有分组的列表上（kind 1 = 列表）：把它移出分组
+            const int loner = window->m_doc.addList("散兵游勇", "#008080");
+            window->onListDrop(outsider, 1, loner);
+            check(window->m_doc.findList(outsider)->groupId == -1,
+                  "拖到无分组的列表上 => 移出分组");
+
+            window->m_sidebar->refresh();
+            check(window->m_sidebar->groupHeaderCount() >= 1, "分组标题还在");
+            window->m_doc.removeList(outsider);
+            window->m_doc.removeList(loner);
+            window->m_sidebar->refresh();
+        }
 
         // 第三个列表并进来：传递性
         const int listC = window->m_doc.addList("分组丙", "#0077FF");

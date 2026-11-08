@@ -1,4 +1,8 @@
 #include "TaskSidebar.h"
+#include <QApplication>
+#include <QDrag>
+#include <QDropEvent>
+#include <QMimeData>
 
 #include "../ui/Theme.h"
 
@@ -191,6 +195,8 @@ void TaskSidebar::rebuildListRows() {
     // 不清掉的话 m_dropTargets 里会留着**已经销毁**的指针，
     // 拖放事件就送到野指针上去了（表现为「拖了没反应」，严重时崩溃）。
     m_dropTargets.clear();
+    // 列表行同理：旧行马上 deleteLater，留着它们的指针会在下次事件里被查表查到
+    m_listRowWidgets.clear();
     // 智能视图的行是常驻的，重建后要重新登记回来
     for (const SmartRow &entry : m_smartButtons) {
         if (!entry.button) continue;
@@ -211,6 +217,7 @@ void TaskSidebar::rebuildListRows() {
         header->deleteLater();
     }
     m_groupHeaders.clear();
+    m_groupHeaderIds.clear();
 
     if (!m_doc) return;
 
@@ -232,12 +239,33 @@ void TaskSidebar::rebuildListRows() {
         if (grouped && list.groupId != currentGroup) {
             currentGroup = list.groupId;
             ++groupSeen;
-            QLabel* header = new QLabel(QString("分组 %1").arg(groupSeen), m_listContainer);
+            // 组标题显示用户起的名字；没起名才回退成「分组 N」
+            const std::string custom = m_doc->groupName(list.groupId);
+            const QString headerText = custom.empty()
+                                           ? QString("分组 %1").arg(groupSeen)
+                                           : QString::fromStdString(custom);
+            QLabel* header = new QLabel(headerText, m_listContainer);
             header->setStyleSheet(
                 QString("QLabel { color: %1; font-size: 9px; font-weight: bold; "
                         "padding: 4px 8px 0 4px; background: transparent; }")
                     .arg(ThemeManager::hex(ThemeManager::current().sidebarMuted)));
-            header->setToolTip("同一分组的列表（由并查集维护）");
+            header->setToolTip("双击改分组名；右键可改名或解散分组");
+            header->setCursor(Qt::PointingHandCursor);
+            header->installEventFilter(this);
+            header->setContextMenuPolicy(Qt::CustomContextMenu);
+            m_groupHeaderIds.insert(header, list.groupId);
+            // 组标题也是「列表」的落点（kind 2 = 分组）
+            registerDropTarget(header, 2, list.groupId);
+            const int headerGroupId = list.groupId;
+            connect(header, &QWidget::customContextMenuRequested, this,
+                    [this, headerGroupId](const QPoint& pos) {
+                        QMenu menu(this);
+                        QAction *renameAct = menu.addAction("重命名分组");
+                        QAction *dissolveAct = menu.addAction("解散分组（列表变回无分组）");
+                        QAction *chosen = menu.exec(mapToGlobal(pos));
+                        if (chosen == renameAct) emit renameGroupRequested(headerGroupId);
+                        else if (chosen == dissolveAct) emit dissolveGroupRequested(headerGroupId);
+                    });
             m_listLayout->insertWidget(m_listLayout->count() - 1, header);
             m_groupHeaders.push_back(header);
         } else if (!grouped && currentGroup != -1) {
@@ -281,6 +309,12 @@ void TaskSidebar::rebuildListRows() {
         m_listLayout->insertWidget(m_listLayout->count() - 1, container);
 
         const int listId = list.id;
+        // 这一行的所有控件都能起拖：用户可能按在名字、圆点或数字上
+        for (QWidget *w : {static_cast<QWidget*>(container), static_cast<QWidget*>(button),
+                           static_cast<QWidget*>(dot), static_cast<QWidget*>(badge)}) {
+            m_listRowWidgets.insert(w, listId);
+            w->installEventFilter(this);
+        }
         connect(button, &QPushButton::clicked, this, [this, listId]() {
             m_smartViewSelected = false;
             m_listId = listId;
@@ -441,6 +475,46 @@ void TaskSidebar::registerDropTarget(QWidget *widget, int kind, int id) {
 }
 
 bool TaskSidebar::eventFilter(QObject *watched, QEvent *event) {
+    // ---- 把「列表」拖到别的分组：按下记录、移动起拖 ----
+    if (m_listRowWidgets.contains(watched)) {
+        const int listId = m_listRowWidgets.value(watched);
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                m_dragListId = listId;
+                m_dragPressPos = mouse->position().toPoint();
+            }
+        } else if (event->type() == QEvent::MouseMove) {
+            auto *mouse = static_cast<QMouseEvent *>(event);
+            if ((mouse->buttons() & Qt::LeftButton) && m_dragListId == listId) {
+                const QPoint delta = mouse->position().toPoint() - m_dragPressPos;
+                if (delta.manhattanLength() >= QApplication::startDragDistance()) {
+                    auto *drag = new QDrag(this);
+                    auto *mime = new QMimeData;
+                    mime->setData(TaskMime::kListId,
+                                  QByteArray::number(listId));
+                    drag->setMimeData(mime);
+                    m_dragListId = -1;      // 已经起拖了，别重复发起
+                    drag->exec(Qt::MoveAction);
+                    return true;
+                }
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            if (m_dragListId == listId) m_dragListId = -1;
+        }
+    }
+
+    // 双击分组标题 = 改分组名（QLabel 没有双击信号，只能在这里拦）
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        if (auto *label = qobject_cast<QLabel *>(watched)) {
+            const auto header = m_groupHeaderIds.constFind(label);
+            if (header != m_groupHeaderIds.constEnd()) {
+                emit renameGroupRequested(header.value());
+                return true;
+            }
+        }
+    }
+
     const auto it = m_dropTargets.constFind(watched);
     if (it == m_dropTargets.constEnd()) {
         return QWidget::eventFilter(watched, event);
@@ -450,7 +524,11 @@ bool TaskSidebar::eventFilter(QObject *watched, QEvent *event) {
         case QEvent::DragEnter:
         case QEvent::DragMove: {
             auto *drag = static_cast<QDragMoveEvent*>(event);
-            if (!drag->mimeData()->hasFormat(TaskMime::kTaskId)) break;
+            const bool taskDrag = drag->mimeData()->hasFormat(TaskMime::kTaskId);
+            const bool listDrag = drag->mimeData()->hasFormat(TaskMime::kListId);
+            // 列表只能在「列表行 / 分组标题」上落；任务行只能落在智能视图或列表上
+            if (!taskDrag && !listDrag) break;
+            if (listDrag && it.value().first == 0) break;   // 0 = 智能视图，不放列表
             drag->setDropAction(Qt::MoveAction);
             drag->accept();
             // 高亮一下当前落点，用户能看出会落到哪一行
@@ -470,10 +548,25 @@ bool TaskSidebar::eventFilter(QObject *watched, QEvent *event) {
         }
         case QEvent::Drop: {
             auto *drop = static_cast<QDropEvent*>(event);
-            if (!drop->mimeData()->hasFormat(TaskMime::kTaskId)) break;
             if (auto *w = qobject_cast<QWidget*>(watched)) {
                 w->setStyleSheet(QString());
             }
+
+            // 拖来的是「列表」：落到分组标题或另一张列表上
+            if (drop->mimeData()->hasFormat(TaskMime::kListId)) {
+                bool listOk = false;
+                const int draggedList =
+                    QString::fromUtf8(drop->mimeData()->data(TaskMime::kListId))
+                        .toInt(&listOk);
+                if (!listOk || draggedList < 0) break;
+                if (it.value().first == 0) break;          // 智能视图不收列表
+                drop->setDropAction(Qt::MoveAction);
+                drop->accept();
+                emit listDropRequested(draggedList, it.value().first, it.value().second);
+                return true;
+            }
+
+            if (!drop->mimeData()->hasFormat(TaskMime::kTaskId)) break;
             const QByteArray raw = drop->mimeData()->data(TaskMime::kTaskId);
             bool ok = false;
             const int taskId = QString::fromUtf8(raw).toInt(&ok);

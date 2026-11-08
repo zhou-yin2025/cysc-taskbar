@@ -24,6 +24,8 @@ class QLabel;
 // 侧栏认这个类型才接收放下，避免把外部的任意拖拽当成任务。
 namespace TaskMime {
 inline const char *kTaskId = "application/x-cysc-task-id";
+// 拖动侧栏里的「列表」本身（拖进别的分组）
+inline const char *kListId = "application/x-cysc-list-id";
 } // namespace TaskMime
 
 // 左侧栏（对应 Microsoft To Do 的列表栏）。
@@ -81,6 +83,13 @@ signals:
     void taskDropRequested(int kind, int targetId, int taskId);
     // 把列表移出它所在的分组（解散该列表的分组关系）。
     void removeListFromGroupRequested(int listId);
+    // 给分组改名 / 解散整个分组（组内列表都变成「无分组」）
+    void renameGroupRequested(int groupId);
+    void dissolveGroupRequested(int groupId);
+    // 把某个列表拖到了 (kind, targetId) 上：
+    //   kind 2 = 分组标题（id 是分组号）  -> 加入该分组
+    //   kind 1 = 另一个列表（id 是列表号）-> 与它同组；它没有分组时则把拖动的移出分组
+    void listDropRequested(int listId, int kind, int targetId);
 
 private:
     struct SmartRow {
@@ -122,8 +131,16 @@ private:
     std::vector<ListRow> m_listRows;
     // 分组标题行（同组列表前的「分组 N」标签），refresh 时一起重建。
     std::vector<QWidget*> m_groupHeaders;
+    // 组标题（QLabel*）对应的分组号：改名/解散时要知道点的是哪一组
+    QHash<QLabel*, int> m_groupHeaderIds;
+
     // 控件 -> (kind, id)：拖到哪个控件上就知道要落到哪个视图/列表
     QHash<QObject*, QPair<int, int>> m_dropTargets;
+
+    // 列表行的拖拽：按下时记下是哪一行，移动超过阈值就发起拖动
+    QHash<QObject*, int> m_listRowWidgets;   // 控件 -> 列表号
+    int m_dragListId = -1;
+    QPoint m_dragPressPos;
 
     bool m_smartViewSelected = true;
     SmartView m_view = SmartView::MyDay;

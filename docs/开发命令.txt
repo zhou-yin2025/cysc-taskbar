@@ -51,7 +51,7 @@ rem build\ninja-Debug\cysc-taskbar.exe --dsdemo        (数据结构演示 38 �
 rem set "CYSC_TEST_TMPDIR=%CD%\build\ninja-Debug\cysc_test_tmp"
 rem 性能断言默认放宽（机器忙时会抖）；要按规格验收（500 条 < 300ms）先设：
 rem   set CYSC_PERF_STRICT=1
-rem build\ninja-Debug\cysc-taskbar.exe --guitest       (界面自检 441 项)
+rem build\ninja-Debug\cysc-taskbar.exe --guitest       (界面自检 453 项)
 
 rem ---- 9. 指定数据库位置（覆盖 StoragePaths 的自动探测）----
 rem set "CYSC_DB_PATH=D:\somewhere\cysc.db"

@@ -141,6 +141,16 @@ bool DocumentStore::createSchema() {
     }
 
     if (!q.exec(
+            "CREATE TABLE IF NOT EXISTS groups ("
+            "group_id INTEGER PRIMARY KEY,"
+            "name TEXT NOT NULL"
+            ")")) {
+        m_lastError = q.lastError().text();
+        qWarning() << "DocumentStore: create groups failed:" << m_lastError;
+        return false;
+    }
+
+    if (!q.exec(
             "CREATE TABLE IF NOT EXISTS subtasks ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "task_id INTEGER NOT NULL,"
@@ -218,7 +228,7 @@ bool DocumentStore::saveDocument(const TaskDocument& doc) {
     clear.exec("DELETE FROM tasks");
     clear.exec("DELETE FROM lists");
 
-    if (!saveLists(doc) || !saveTasks(doc) || !saveSubtasks(doc)) {
+    if (!saveLists(doc) || !saveGroups(doc) || !saveTasks(doc) || !saveSubtasks(doc)) {
         m_db.rollback();
         return false;
     }
@@ -247,6 +257,42 @@ bool DocumentStore::saveLists(const TaskDocument& doc) {
             qWarning() << "DocumentStore: saveLists failed:" << m_lastError;
             return false;
         }
+    }
+    return true;
+}
+
+bool DocumentStore::saveGroups(const TaskDocument &doc) {
+    // 小表，整表重写最省心（分组数量最多十几个）
+    QSqlQuery del(m_db);
+    if (!del.exec("DELETE FROM groups")) {
+        m_lastError = del.lastError().text();
+        return false;
+    }
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO groups (group_id, name) VALUES (?, ?)");
+    for (int groupId : doc.groupNames().keys()) {
+        const std::string name = doc.groupNames().value(groupId, std::string());
+        if (name.empty()) continue;
+        q.addBindValue(groupId);
+        q.addBindValue(QString::fromStdString(name));
+        if (!q.exec()) {
+            m_lastError = q.lastError().text();
+            qWarning() << "DocumentStore: saveGroups failed:" << m_lastError;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool DocumentStore::loadGroups(TaskDocument &doc) {
+    QSqlQuery q(m_db);
+    if (!q.exec("SELECT group_id, name FROM groups")) {
+        m_lastError = q.lastError().text();
+        qWarning() << "DocumentStore: loadGroups failed:" << m_lastError;
+        return false;
+    }
+    while (q.next()) {
+        doc.setGroupName(q.value(0).toInt(), q.value(1).toString().toStdString());
     }
     return true;
 }
@@ -321,6 +367,8 @@ bool DocumentStore::loadDocument(TaskDocument& doc) {
     // 分组关系按读到的 groupId 恢复，再按并查集结果把 groupId 规范化回去。
     doc.rebuildGroupsFromListIds();
     doc.syncGroupIds();
+    // 名字必须在分组号规范化**之后**读：表里存的是规范化后的 group_id
+    if (!loadGroups(doc)) return false;
     return true;
 }
 

@@ -54,6 +54,9 @@ private:
     bool loadLists(TaskDocument& doc);
     bool loadTasks(TaskDocument& doc);
     bool loadSubtasks(TaskDocument& doc);
+    // 分组名：单独一张小表（group_id -> name）
+    bool saveGroups(const TaskDocument& doc);
+    bool loadGroups(TaskDocument& doc);
 
     QString m_connectionName;
     QSqlDatabase m_db;
