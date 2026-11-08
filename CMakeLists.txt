@@ -188,7 +188,7 @@ if(CYSC_BUILD_TESTS)
     set_tests_properties(cysc_gui_tests PROPERTIES
         # 界面自检在 Debug 下要重建几百次列表，本来就慢（Release 十几秒，
         # Debug 两分钟上下）。给足余量，免得在慢机器/CI 上被误判为失败。
-        TIMEOUT 300
+        TIMEOUT 600
         ENVIRONMENT "${CYSC_TEST_ENV}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
