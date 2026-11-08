@@ -1,4 +1,7 @@
 #include "mainwindow.h"
+#include "src/models/TaskImporter.h"
+#include "src/widgets/TaskImportDialog.h"
+#include "src/widgets/TaskSettingsDialog.h"
 #include "src/ui/Theme.h"
 #include "src/demo/ds_demo.h"
 
@@ -75,7 +78,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("CYSC TaskBar");
     QApplication::setOrganizationName("CYSC");
-    QApplication::setApplicationVersion("0.1.0");
+    QApplication::setApplicationVersion("0.2.0");
 
     // 偏好设置存成 INI 文件，而不是默认的注册表。
     //
@@ -208,6 +211,64 @@ int main(int argc, char *argv[]) {
         out << (saved > 0 ? "窗口已渲染成图片\n" : "渲染失败\n");
         out.flush();
         return saved > 0 ? 0 : 1;
+    }
+
+    // 便于检查/截图：把「设置」对话框和「导入预览」也渲染成图片。
+    // 用法：--render-settings <文件> / --render-import <文件>
+    // 这两个对话框是模态的，正常路径下要人去点；这里用 show() + grab()，
+    // 不进入事件循环，跑完直接退出。
+    {
+        const int si = args.indexOf("--render-settings");
+        if (si >= 0 && si + 1 < args.size()) {
+            TaskSettingsDialog dlg(&w);
+            dlg.show();
+            QCoreApplication::processEvents();
+            const QString path = args.at(si + 1);
+            const bool ok = dlg.grab().save(path);
+            QTextStream out(stdout);
+            out << (ok ? "设置对话框已渲染\n" : "渲染失败\n");
+            out.flush();
+            return ok ? 0 : 1;
+        }
+    }
+    {
+        const int ii = args.indexOf("--render-import");
+        if (ii >= 0 && ii + 1 < args.size()) {
+            const std::string sample =
+                "任务名：整理会议纪要\n"
+                "备注：把结论摘出来发群里\n"
+                "截止时间：2026/11/20 18:00\n"
+                "紧急度：3\n"
+                "标签：工作 文档\n"
+                "步骤：导出记录\n"
+                "步骤：写结论\n"
+                "\n"
+                "任务名：预约牙医\n"
+                "截止时间：2026/11/22 10:00\n"
+                "\n"
+                "任务名：读《三体》\n"
+                "备注：每天两章\n";
+            const TaskImporter::ParseResult parsed = TaskImporter::parse(sample);
+            // 用一个临时的空文档：预览只用到列表名，不需要真的动用户的库
+            TaskDocument demoDoc;
+            TaskImportDialog dlg(parsed, demoDoc, QString::fromUtf8("示例导入.txt"), &w);
+            // 把「格式说明」展开，截图里能看到输入说明
+            if (auto *toggle = dlg.findChild<QPushButton *>("importHelpToggle")) {
+                toggle->setChecked(true);
+            }
+            dlg.show();
+            // 展开说明后对话框要长大一点，否则说明框会压住下面的统计行。
+            // adjustSize() 之后再跑两轮事件循环让布局真正结算。
+            dlg.adjustSize();
+            QCoreApplication::processEvents();
+            QCoreApplication::processEvents();
+            const QString path = args.at(ii + 1);
+            const bool ok = dlg.grab().save(path);
+            QTextStream out(stdout);
+            out << (ok ? "导入预览已渲染\n" : "渲染失败\n");
+            out.flush();
+            return ok ? 0 : 1;
+        }
     }
 
     // 诊断用：强制假定托盘可用。用于在没有通知区域的会话里验证

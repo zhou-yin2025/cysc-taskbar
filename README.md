@@ -12,6 +12,10 @@
 
 ![主界面](docs/shots/01_main.png)
 
+| 设置（四款主题 / 行密度 / 缩放） | 导入预览（带格式说明） |
+|---|---|
+| ![设置](docs/shots/06_settings.png) | ![导入](docs/shots/07_import.png) |
+
 ---
 
 ## 为什么值得一试

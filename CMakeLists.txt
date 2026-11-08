@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 # VERSION 是必需的：macOS 的 bundle 会用它填 CFBundleVersion /
 # CFBundleShortVersionString（见下面 APPLE 分支），没有的话那两个字段是空的。
-project(cysc-taskbar VERSION 0.1.0 LANGUAGES CXX)
+project(cysc-taskbar VERSION 0.2.0 LANGUAGES CXX)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql)
 

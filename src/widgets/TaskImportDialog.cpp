@@ -82,7 +82,8 @@ TaskImportDialog::TaskImportDialog(const TaskImporter::ParseResult &parsed,
     helpText->setObjectName("importHelpText");
     helpText->setReadOnly(true);
     helpText->setVisible(false);
-    helpText->setFixedHeight(168);
+    // 高度按内容算（下面展开时会重算），避免文字被切掉半行
+    helpText->setFixedHeight(120);
     helpText->setStyleSheet(
         QString("QPlainTextEdit { background-color: %1; color: %2; border: 1px solid %3;"
                 " font-size: 10px; }")
@@ -109,6 +110,13 @@ TaskImportDialog::TaskImportDialog(const TaskImporter::ParseResult &parsed,
     connect(helpToggle, &QPushButton::toggled, this,
             [helpToggle, helpText](bool on) {
                 helpText->setVisible(on);
+                if (on) {
+                    // 按「行数 × 行高」算高度。不能用 document()->size().height()：
+                    // 那时控件还没按最终宽度排版，文本换行数还会变，量出来偏小。
+                    const int lines = helpText->document()->blockCount();
+                    const int lineH = helpText->fontMetrics().lineSpacing();
+                    helpText->setFixedHeight(qBound(96, lines * lineH + 16, 300));
+                }
                 helpToggle->setText(on ? QString::fromUtf8("格式说明 ▾")
                                        : QString::fromUtf8("格式说明 ▸"));
             });

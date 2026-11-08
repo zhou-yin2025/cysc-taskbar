@@ -1917,7 +1917,7 @@ void MainWindow::refreshList() {
     }
 
     const int done = m_doc.countByStatus(2);
-    m_statusLabel->setText(QString("共 %1 项 - 未完成 %2，已完成 %3　｜　单击查看详情，双击切换状态")
+    m_statusLabel->setText(QString("共 %1 项 - 未完成 %2，已完成 %3　｜　单击查看详情，点行首圆点标完成")
                                .arg(total).arg(total - done).arg(done));
     m_statusLabel->setStyleSheet(QString("QLabel { color: %1; font-size: 10px; }").arg(ThemeManager::hex(ThemeManager::current().accentDim)));
 }
@@ -2609,8 +2609,23 @@ int MainWindow::renderToImage(const QString& path) {
     show();
     ensurePolished();
     if (layout()) layout()->activate();
-    for (int i = 0; i < 5; ++i) QApplication::processEvents();
-    QApplication::processEvents(QEventLoop::AllEvents, 200);
+    // 侧栏是「滚动区里再套一层布局」，只跑几轮事件的话内层布局可能还没结算，
+    // 组标题会压在列表行上（截图里看到过）。多跑几轮并给它一点真实时间。
+    for (int i = 0; i < 20; ++i) {
+        QApplication::processEvents();
+        if (i == 9) QThread::msleep(120);
+    }
+    QApplication::processEvents(QEventLoop::AllEvents, 300);
+    // 关键：refreshList() 里旧行是 deleteLater() 的，processEvents() **不会**
+    // 处理 DeferredDelete，那些旧控件还活着、还按老坐标画 —— 截图里就会出现
+    // 组标题压着列表行、同一个列表名出现两次。这里显式把它们收掉。
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    if (QWidget *sidebar = m_sidebar) {
+        sidebar->updateGeometry();
+        for (QWidget *w : sidebar->findChildren<QWidget *>()) w->updateGeometry();
+        if (sidebar->layout()) sidebar->layout()->activate();
+        for (int i = 0; i < 6; ++i) QApplication::processEvents();
+    }
 
     QPixmap shot = grab();
     if (shot.isNull() || shot.width() <= 0) {

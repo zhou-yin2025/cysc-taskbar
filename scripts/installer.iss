@@ -12,7 +12,7 @@
 
 #define AppName "CYSC 任务栏"
 #define AppNameEn "CYSC TaskBar"
-#define AppVersion "0.1.0"
+#define AppVersion "0.2.0"
 #define AppExe "CYSC任务管理.exe"
 #define AppPublisher "CYSC TaskBar"
 
