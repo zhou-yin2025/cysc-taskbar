@@ -100,11 +100,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "编译失败：$LASTEXITCODE" }
 
       # 跑测试。CTest 会把 Qt 的 bin/plugins 注入环境，所以不用额外设 PATH。
+      #
+      # 失败时把 FAIL 行做成 GitHub 注解（annotation）：job 日志要登录才看得到，
+      # 而公开仓库的注解接口不需要认证，排查时能直接取到失败的断言。
       - name: 跑测试
         shell: pwsh
         run: |
-          ctest --test-dir build/ci --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw "测试失败：$LASTEXITCODE" }
+          $log = Join-Path $env:RUNNER_TEMP 'ctest.log'
+          ctest --test-dir build/ci --output-on-failure 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if (Test-Path $log) {
+            $bad = Select-String -Path $log -Pattern 'FAIL |Failed|Test #\d+:' |
+                     Select-Object -First 12
+            foreach ($line in $bad) {
+              $text = $line.Line.Trim().Replace('"', '')
+              if ($text.Length -gt 180) { $text = $text.Substring(0, 180) }
+              Write-Host "::error title=测试失败::$text"
+            }
+          }
+          if ($code -ne 0) { throw "测试失败：$code" }
 
       # 打安装程序（Inno Setup）。
       # windows 运行器预装了 Inno Setup 6。
