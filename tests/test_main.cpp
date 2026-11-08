@@ -2108,7 +2108,11 @@ void testTaskImporter() {
 #ifdef Q_OS_WIN
     {
         const std::string path = testutil::tempDbPath("import_gbk.txt");
-        const QByteArray gbk = QString("任务名：阅读\n").toLocal8Bit();
+        // 必须写**确定的 GBK 字节**，不能用 toLocal8Bit()：
+        // 那取决于系统默认代码页，英文版 Windows（CI runner）上根本不是 GBK，
+        // 于是这条断言在中文机器上过、在英文机器上挂 —— 测试自身的 bug。
+        // 下面这段是「任务名：阅读\n」的 GB18030 编码。
+        const QByteArray gbk = QByteArray::fromHex("C8CECEF1C3FBA3BAD4C4B6C10A");
         {
             QFile f(QString::fromStdString(path));
             if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -2121,6 +2125,8 @@ void testTaskImporter() {
         const bool ok = readTextFile(path, text, err);
         testutil::expect(ok, "GBK 文件能读");
         testutil::expect(text.find("任务名") != std::string::npos, "GBK 内容被正确转成 UTF-8");
+        testutil::expect(text.find("阅读") != std::string::npos,
+                         "GBK 的每个汉字都转对了（不是替换字符）");
     }
 #endif
 }

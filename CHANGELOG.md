@@ -122,7 +122,7 @@
 - 数据结构可视化面板：实时显示四种索引结构的内部状态
 
 **工程**
-- 三套自动化自检共 1179 项：单元 676、界面 453、演示 38
+- 三套自动化自检共 1180 项：单元 676、界面 453、演示 38
 - GitHub Actions 双平台构建；打 tag 时自动创建 Release
 - Windows 安装程序（Inno Setup）与便携版 zip；macOS `.app` 与 `.dmg`
 - 应用图标（7 档尺寸）；`tools/make_icon.py` 可重新生成 `.ico` 与 macOS `.iconset`
