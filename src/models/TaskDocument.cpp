@@ -630,9 +630,10 @@ int TaskDocument::countByStatus(int status) const {
 }
 
 int TaskDocument::countStarred() const {
+    // 侧栏徽标显示的是「还剩多少」，已完成的不算进去
     int n = 0;
     for (const Task& t : m_tasks) {
-        if (t.starred) ++n;
+        if (t.starred && t.status != 2) ++n;
     }
     return n;
 }
@@ -640,7 +641,7 @@ int TaskDocument::countStarred() const {
 int TaskDocument::countInMyDay() const {
     int n = 0;
     for (const Task& t : m_tasks) {
-        if (t.inMyDay) ++n;
+        if (t.inMyDay && t.status != 2) ++n;
     }
     return n;
 }
@@ -655,6 +656,14 @@ int TaskDocument::countPlanned() const {
 
 int TaskDocument::countCompleted() const {
     return countByStatus(2);
+}
+
+int TaskDocument::countUnfinished() const {
+    int n = 0;
+    for (const Task& t : m_tasks) {
+        if (t.status != 2) ++n;
+    }
+    return n;
 }
 
 int TaskDocument::countInList(int listId) const {

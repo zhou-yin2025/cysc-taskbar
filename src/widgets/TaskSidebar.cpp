@@ -347,6 +347,20 @@ void TaskSidebar::showListMenu(int listId, const QPoint& globalPos) {
     else if (chosen == deleteAct)   emit deleteListRequested(listId);
 }
 
+QString TaskSidebar::smartBadgeText(SmartView view) const {
+    for (const SmartRow &row : m_smartButtons) {
+        if (row.view == view) return row.badge ? row.badge->text() : QString();
+    }
+    return QString();
+}
+
+QString TaskSidebar::listBadgeText(int listId) const {
+    for (const ListRow &row : m_listRows) {
+        if (row.listId == listId) return row.badge ? row.badge->text() : QString();
+    }
+    return QString();
+}
+
 void TaskSidebar::refresh() {
     if (!m_doc) return;
 
@@ -355,7 +369,7 @@ void TaskSidebar::refresh() {
         m_doc->countInMyDay(),
         m_doc->countStarred(),
         m_doc->countPlanned(),
-        static_cast<int>(m_doc->tasks().size()),
+        m_doc->countUnfinished(),        // 「全部」显示未完成数量，不是含已完成的总数
         m_doc->countCompleted(),
     };
     for (SmartRow& row : m_smartButtons) {

@@ -62,6 +62,9 @@ public:
     int groupHeaderCount() const { return static_cast<int>(m_groupHeaders.size()); }
     // 界面自检用：拿到某个 (kind,id) 对应的拖放目标控件，便于精确投递拖放事件。
     QWidget *testDropTarget(int kind, int id) const;
+    // 界面自检用：某个智能视图 / 列表当前显示的计数徽标文本。
+    QString smartBadgeText(SmartView view) const;
+    QString listBadgeText(int listId) const;
 
 signals:
     void smartViewChosen(SmartView view);

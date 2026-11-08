@@ -147,6 +147,8 @@ const char* kPriorityNames[4] = {"低", "中", "高", "紧急"};
 // 所以这里只返回**与具体任务无关**的那部分规则，由列表统一挂一次
 // （见 installRowStyleSheet）。任务相关的颜色用一个很小的内联样式表直接设到
 // 那个小标签上——它没有子控件，重算代价可以忽略。
+QString doneRowStyleSheet();
+
 QString rowStyleSheet() {
     const Theme &th = ThemeManager::current();
     auto h = [](const QColor &c) { return ThemeManager::hex(c); };
@@ -163,6 +165,8 @@ QString rowStyleSheet() {
         // 删除线由 StrikeLabel 自绘（为了画线动画），这里不再用 text-decoration
         "QLabel#rowTitleDone { color: %6; font-size: 12px; }"
         "QLabel#rowTitlePaused { color: %6; font-size: 12px; font-style: italic; }"
+        // 已完成的元信息（日期/步骤/标签）用更浅的颜色，见函数末尾的追加
+        "QLabel#rowMetaDone { color: %6; font-size: 9px; }"
         // 固定不变的小标签
         "QLabel#rowNote { color: %7; background-color: rgba(0,170,136,40);"
         " border-radius: 3px; padding: 1px 4px; font-size: 9px; }"
@@ -183,7 +187,23 @@ QString rowStyleSheet() {
              h(th.cardMutedInk),               // 6
              h(th.statusAccent[1]),            // 7 备注标记用「进行中」的青绿
              h(th.panelBg))                    // 8
-        .arg(h(th.toolbarBg)));                // 9 输入框底
+        .arg(h(th.toolbarBg)))                 // 9 输入框底
+        + doneRowStyleSheet();                 // 已完成整行：底色更淡
+}
+
+// 已完成任务整行淡出：把卡片底和面板底各取一半，四款主题都适用。
+QString doneRowStyleSheet() {
+    const Theme &th = ThemeManager::current();
+    auto mix = [](const QColor &a, const QColor &b) {
+        return QColor::fromRgbF((a.redF() + b.redF()) / 2.0,
+                                (a.greenF() + b.greenF()) / 2.0,
+                                (a.blueF() + b.blueF()) / 2.0);
+    };
+    return ThemeManager::withRadius(
+        QString("QWidget#taskRowDone { background-color: %1; border: 1px solid %2;"
+                " border-radius: 5px; }")
+            .arg(ThemeManager::hex(mix(th.cardBg, th.panelBg)),
+                 ThemeManager::hex(th.cardBorder)));
 }
 
 // 任务相关的小标签：没有子控件，内联样式表的重算代价可以忽略。
@@ -872,7 +892,9 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
     const bool expanded = (task.id == m_expandedId);
     // 用两个固定的 objectName 区分折叠/展开，规则写进列表级样式表（只设一次）。
     // 如果改用动态属性 + 属性选择器，Qt 每次改属性都要 repolish，反而更慢。
-    container->setObjectName(expanded ? "taskRowExpanded" : "taskRow");
+    // 已完成的整行淡出：底色更浅，和未完成的任务一眼能分开
+    container->setObjectName(expanded ? "taskRowExpanded"
+                                     : (task.status == 2 ? "taskRowDone" : "taskRow"));
     // 折叠时让鼠标事件穿透到列表视口，单击/双击统一由事件过滤器处理；
     // 展开后必须接收事件，否则详情里的控件点不动。
     container->setAttribute(Qt::WA_TransparentForMouseEvents, !expanded);
@@ -925,11 +947,13 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
     auto *glyph = new StatusGlyph(head);
     glyph->setObjectName("rowGlyph");
     glyph->setStatus(task.status);
-    glyph->setToolTip(QString("状态：%1（双击切换）").arg(taskStatusText(task.status)));
+    glyph->setToolTip(QString("状态：%1（点一下标完成）").arg(taskStatusText(task.status)));
     h->addWidget(glyph);
 
     auto *titleLabel = new StrikeLabel(head);
-    titleLabel->setObjectName("rowTitle");
+    titleLabel->setObjectName(task.status == 2 ? "rowTitleDone"
+                              : task.status == 3 ? "rowTitlePaused"
+                                                 : "rowTitle");
     // 标题占满剩余宽度，太长时由 Qt 自己省略（setTextInteractionFlags 保持默认）。
     // 不再固定 174px、也不再手动 elidedText —— 手动省略只在固定宽度下才对，
     // 窗口拉宽后标题还是被砍掉，反而更难看清。
@@ -938,7 +962,7 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
     titleLabel->setMinimumWidth(40);
     titleLabel->setProperty("state", task.status == 2 ? "done"
                                  : task.status == 3 ? "paused" : "normal");
-    titleLabel->setToolTip(QString("%1｜优先级 %2｜截止 %3\n单击展开详情，双击切换状态")
+    titleLabel->setToolTip(QString("%1｜优先级 %2｜截止 %3\n单击展开详情，点行首圆点标完成")
                                .arg(QString::fromStdString(task.title))
                                .arg(priorityName(task.priority))
                                .arg(QString::fromStdString(task.deadline)));
@@ -978,7 +1002,7 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
         ml->setContentsMargins(26, 0, 0, 3);
         ml->setSpacing(0);
         auto *metaLabel = new QLabel(meta, metaRow);
-        metaLabel->setObjectName("rowMeta");
+        metaLabel->setObjectName(task.status == 2 ? "rowMetaDone" : "rowMeta");
         {
             QPalette pal = metaLabel->palette();
             pal.setColor(QPalette::WindowText, th.cardMutedInk);
@@ -4104,6 +4128,20 @@ static int run() {
     // 改状态会整表重排（要应用「已完成置底」），但任务不能丢。
     check(window->m_taskList->count() == listCountBefore, "点状态圆不会丢任务");
 
+    // 侧栏徽标显示的是**未完成**数量，不是含已完成的总数
+    {
+        const int total = static_cast<int>(window->m_doc.tasks().size());
+        const int doneNow = window->m_doc.countCompleted();
+        window->m_sidebar->refresh();
+        check(window->m_sidebar->smartBadgeText(SmartView::All)
+                  == QString::number(total - doneNow),
+              "「全部」徽标是未完成数量");
+        check(window->m_sidebar->smartBadgeText(SmartView::Completed)
+                  == QString::number(doneNow),
+              "「已完成」徽标是已完成数量");
+        check(window->m_doc.countStarred() <= total - doneNow, "「重要」计数不含已完成");
+    }
+
     // 真实落下：用列表暴露的自检入口（落点计算与 dropEvent 同一条路径）。
     // 为什么不用合成 QDropEvent：Qt 要求先收 DragEnter 才派发 Drop，
     // 离屏平台下这条链路不可靠。这里直接测"算出落点 -> 发信号 -> 写回模型"。
@@ -5903,6 +5941,19 @@ static int run() {
         check(title && title->strikeOn(), "已完成的任务有删除线");
         check(title && !title->strikeAnimating(), "删除线不再播动画");
         check(title && qAbs(title->strikeProgress() - 1.0) < 0.001, "删除线一开始就是满的");
+
+        // 已完成不只是删除线：标题换成浅色样式、整行底色也淡出
+        check(title && title->objectName() == "rowTitleDone", "已完成任务的标题用浅色样式");
+        {
+            QWidget *doneRow = nullptr;
+            for (int i = 0; i < window->m_taskList->count() && !doneRow; ++i) {
+                QListWidgetItem *item = window->m_taskList->item(i);
+                if (item->data(Qt::UserRole).toInt() != doneId) continue;
+                doneRow = window->m_taskList->itemWidget(item);
+            }
+            check(doneRow && doneRow->objectName() == "taskRowDone",
+                  "已完成任务整行用淡出的底色");
+        }
 
         // 回到待办：删除线立刻消失
         window->applyStatus(doneId, 0);

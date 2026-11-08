@@ -152,6 +152,8 @@ public:
     int countInMyDay() const;
     int countPlanned() const;
     int countCompleted() const;
+    // 未完成数量（侧栏徽标用：显示「还剩几件事」，而不是含已完成的总数）
+    int countUnfinished() const;
     int countInList(int listId) const;
 
     // ---- 重复任务 ----
