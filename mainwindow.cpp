@@ -589,7 +589,15 @@ MainWindow::MainWindow(QWidget *parent)
     rightLayout->addWidget(m_search);
     setupSuggestionPanel(rightLayout);
     rightLayout->addWidget(m_categoryHost);
-    rightLayout->addWidget(m_taskList, 1);
+
+    // 列表与详情分栏：详情在右边单独一列，列表行不再就地展开。
+    m_detailPane = buildDetailPane();
+    QHBoxLayout *listRowBox = new QHBoxLayout();
+    listRowBox->setContentsMargins(0, 0, 0, 0);
+    listRowBox->setSpacing(8);
+    listRowBox->addWidget(m_taskList, 1);
+    listRowBox->addWidget(m_detailPane);
+    rightLayout->addLayout(listRowBox, 1);
     rightLayout->addWidget(m_statusLabel);
 
     m_sidebar = new TaskSidebar(this);
@@ -643,6 +651,12 @@ MainWindow::MainWindow(QWidget *parent)
     QShortcut *editShortcut = new QShortcut(QKeySequence(Qt::Key_F2), this);
     editShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(editShortcut, &QShortcut::activated, this, &MainWindow::onEditCurrentTask);
+
+    // Esc 收起右侧详情面板（等价于点面板右上角的 ✕）
+    QShortcut *closeDetailShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    connect(closeDetailShortcut, &QShortcut::activated, this, [this]() {
+        if (m_expandedId >= 0) expandTask(-1);
+    });
 
     QShortcut *undoShortcut = new QShortcut(QKeySequence::Undo, this);
     undoShortcut->setContext(Qt::WidgetWithChildrenShortcut);
@@ -893,15 +907,11 @@ QString MainWindow::priorityName(int priority) const {
 QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
     const Theme &th = ThemeManager::current();
     auto *container = new TaskRowWidget();
-    const bool expanded = (task.id == m_expandedId);
-    // 用两个固定的 objectName 区分折叠/展开，规则写进列表级样式表（只设一次）。
-    // 如果改用动态属性 + 属性选择器，Qt 每次改属性都要 repolish，反而更慢。
+    // 行永远是「折叠」样式：详情已经挪到右侧独立面板，行内不再放编辑器。
     // 已完成的整行淡出：底色更浅，和未完成的任务一眼能分开
-    container->setObjectName(expanded ? "taskRowExpanded"
-                                     : (task.status == 2 ? "taskRowDone" : "taskRow"));
-    // 折叠时让鼠标事件穿透到列表视口，单击/双击统一由事件过滤器处理；
-    // 展开后必须接收事件，否则详情里的控件点不动。
-    container->setAttribute(Qt::WA_TransparentForMouseEvents, !expanded);
+    container->setObjectName(task.status == 2 ? "taskRowDone" : "taskRow");
+    // 让鼠标事件穿透到列表视口，单击统一由事件过滤器处理。
+    container->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     QVBoxLayout *outer = new QVBoxLayout(container);
     outer->setContentsMargins(7, 0, 7, 5);
@@ -1035,44 +1045,7 @@ QWidget *MainWindow::createRowWidget(const Task& task, int rowNumber) {
         container->setStyleSheet(pb);
     }
 
-    // 详情区**不在这里建**，只挂一个「按需构建」的闭包。
-    // 展开时由 ensureDetailPanel() 真正构造（见它的说明）。
-    // 细节：用 setProperty 而不是直接存 std::function，是因为 Qt 的属性系统
-    // 会负责拷贝/析构，行控件被 delete 时不会漏。
-    {
-        const Task snapshot = task;
-        container->setProperty(
-            "detailBuilder",
-            QVariant::fromValue(std::function<QWidget*()>(
-                [this, snapshot]() { return createDetailEditor(snapshot); })));
-    }
-    if (expanded) {
-        ensureDetailPanel(container);
-    }
-
     return container;
-}
-
-void MainWindow::ensureDetailPanel(QWidget *row) {
-    if (!row) return;
-    if (row->findChild<QWidget*>("detailPanelWidget")) return;   // 已经有了
-
-    const QVariant prop = row->property("detailBuilder");
-    if (!prop.canConvert<std::function<QWidget*()>>()) return;
-    const auto builder = prop.value<std::function<QWidget*()>>();
-    if (!builder) return;
-
-    QWidget *detail = builder();
-    if (!detail) return;
-    detail->setObjectName("detailPanelWidget");
-
-    // 插在行内最后一个布局里（head 之后）
-    if (QLayout *lay = row->layout()) {
-        lay->addWidget(detail);
-    } else {
-        detail->setParent(row);
-    }
-    detail->setVisible(true);
 }
 
 QWidget *MainWindow::createDetailEditor(const Task& task) {
@@ -1705,7 +1678,7 @@ void MainWindow::expandTask(int id) {
     applyExpansion();
 }
 
-// 就地应用展开状态：只改行高、可见性与鼠标穿透，不重建列表。
+// 应用「当前选中哪条任务」：行永远是折叠高度，详情交给右侧面板。
 void MainWindow::applyExpansion() {
     for (int i = 0; i < m_taskList->count(); ++i) {
         QListWidgetItem *item = m_taskList->item(i);
@@ -1713,8 +1686,7 @@ void MainWindow::applyExpansion() {
         if (!row) continue;
 
         const int id = item->data(Qt::UserRole).toInt();
-        const bool expanded = (id == m_expandedId);
-        row->setAttribute(Qt::WA_TransparentForMouseEvents, !expanded);
+        row->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
         //「进行中」的行打开流动光效（设置里可以关掉）
         if (auto *taskRow = dynamic_cast<TaskRowWidget*>(row)) {
@@ -1724,19 +1696,100 @@ void MainWindow::applyExpansion() {
             taskRow->setGlowing(glowOn && t && t->status == 1);
         }
 
-        // 展开时才真正构造详情面板（懒创建，见 ensureDetailPanel 的说明）。
-        if (expanded) ensureDetailPanel(row);
-
-        QWidget *detail = row->findChild<QWidget*>("detailPanelWidget");
-        if (detail) detail->setVisible(expanded);
-
-        // 折叠/展开后的高度不同，必须更新 sizeHint，否则详情会被裁掉。
-        const int height = expanded
-                               ? qMax(row->sizeHint().height(), row->minimumSizeHint().height())
-                               : m_collapsedHeights.value(id, QSize(0, 28)).height();
-        item->setSizeHint(QSize(0, height));
+        item->setSizeHint(QSize(0, m_collapsedHeights.value(id, QSize(0, 28)).height()));
     }
+    rebuildDetailPane();
     m_taskList->viewport()->update();
+}
+
+// 右侧详情面板的外壳：顶部一行「任务标题 + 关闭」，下面是可滚动的内容区。
+// 内容每次切换任务重建（见 rebuildDetailPane），外壳常驻，避免反复创建滚动区。
+QWidget *MainWindow::buildDetailPane() {
+    QWidget *pane = new QWidget(this);
+    pane->setObjectName("detailPaneHost");
+    // 面板宽度可伸缩：窗口宽就宽一点，窄了也别把列表挤没
+    // 编辑器里有「优先级 + 日期 + 两个下拉」这类整行排列，实测最小需要约 484px；
+    // 面板比这更窄就会把右边几个按钮切掉。最小值就按这个来，别跟内容较劲。
+    pane->setMinimumWidth(500);
+    pane->setMaximumWidth(660);
+    pane->setVisible(false);
+
+    QVBoxLayout *outer = new QVBoxLayout(pane);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+
+    QWidget *bar = new QWidget(pane);
+    QHBoxLayout *barLayout = new QHBoxLayout(bar);
+    barLayout->setContentsMargins(12, 8, 8, 8);
+    barLayout->setSpacing(6);
+    m_detailHeading = new QLabel(bar);
+    m_detailHeading->setObjectName("detailHeading");
+    m_detailHeading->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    barLayout->addWidget(m_detailHeading, 1);
+
+    auto *closeButton = new QPushButton(QString::fromUtf8("✕"), bar);
+    closeButton->setObjectName("detailCloseButton");
+    closeButton->setFlat(true);
+    closeButton->setFixedSize(22, 22);
+    closeButton->setCursor(Qt::PointingHandCursor);
+    closeButton->setToolTip("关闭详情（Esc）");
+    connect(closeButton, &QPushButton::clicked, this, [this]() { expandTask(-1); });
+    barLayout->addWidget(closeButton);
+
+    QScrollArea *scroll = new QScrollArea(pane);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    // 编辑器里有几行是宽控件（优先级 + 日期 + 下拉挤在一行），
+    // 面板再窄就别硬切掉，允许横向滚动，至少不会有点不到的按钮。
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_detailBody = new QWidget(scroll);
+    m_detailBody->setObjectName("detailBody");
+    new QVBoxLayout(m_detailBody);
+    m_detailBody->layout()->setContentsMargins(0, 0, 0, 0);
+    m_detailBody->layout()->setSpacing(0);
+    scroll->setWidget(m_detailBody);
+
+    outer->addWidget(bar);
+    outer->addWidget(scroll, 1);
+    return pane;
+}
+
+// 按 m_expandedId 重建右侧面板的内容；没有选中任务就整块隐藏。
+void MainWindow::rebuildDetailPane() {
+    if (!m_detailPane || !m_detailBody) return;
+
+    QLayout *body = m_detailBody->layout();
+    if (!body) return;
+    while (QLayoutItem *item = body->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            w->setParent(nullptr);
+            w->deleteLater();
+        }
+        delete item;
+    }
+
+    const Task *task = (m_expandedId >= 0) ? m_doc.findTask(m_expandedId) : nullptr;
+    if (!task || m_compact) {
+        m_detailPane->setVisible(false);
+        return;
+    }
+
+    if (m_detailHeading) {
+        // 不再重复任务名：编辑器第一行就是可编辑的标题，
+        // 这里只做区块说明，避免同一个名字在面板里出现两次。
+        m_detailHeading->setText(QString::fromUtf8("任务详情"));
+    }
+    QWidget *editor = createDetailEditor(*task);
+    body->addWidget(editor);
+
+    const bool wasVisible = m_detailPane->isVisible();
+    m_detailPane->setVisible(true);
+    // 第一次打开时如果窗口本来就窄，按面板宽度把窗口横向撑开一点，
+    // 否则列表只剩两百来像素，标题全被省略号吃掉。
+    if (!wasVisible && width() < 980) {
+        const int grow = qMin(380, m_detailPane->minimumWidth() + 20);
+        resize(qMin(width() + grow, 1400), height());
+    }
 }
 
 // 当前是否有「进行中」的任务。决定主窗口要不要画那道流动光效。
@@ -1883,9 +1936,7 @@ void MainWindow::refreshList() {
         const int collapsed = qMax(row->sizeHint().height(), 24);
         m_collapsedHeights.insert(t.id, QSize(0, collapsed));
 
-        const int height = (t.id == m_expandedId)
-                               ? qMax(row->sizeHint().height(), row->minimumSizeHint().height())
-                               : collapsed;
+        const int height = collapsed;      // 行永远是折叠高度，详情在右侧面板
         m_rowSizes.insert(t.id, QSize(0, height));
         item->setSizeHint(QSize(0, height));
         m_taskList->setItemWidget(item, row);
@@ -2276,18 +2327,8 @@ void MainWindow::refreshRow(int taskId) {
         // 原地重建（展开/收起、刷新单行）不改编号，传 0 让它不显示序号之外的变化；
         // 真正带编号的重建走 refreshList。
         QWidget *row = createRowWidget(*task, 0);
-        // 保持这一行原本的展开状态（展开的行需要把详情面板建出来）
-        const bool expanded = (taskId == m_expandedId);
-        row->setAttribute(Qt::WA_TransparentForMouseEvents, !expanded);
-        if (expanded) ensureDetailPanel(row);
-        if (QWidget *detail = row->findChild<QWidget*>("detailPanelWidget")) {
-            detail->setVisible(expanded);
-        }
-
-        const int height = expanded
-                               ? qMax(row->sizeHint().height(), row->minimumSizeHint().height())
-                               : m_collapsedHeights.value(taskId, QSize(0, 28)).height();
-        item->setSizeHint(QSize(0, height));
+        row->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        item->setSizeHint(QSize(0, m_collapsedHeights.value(taskId, QSize(0, 28)).height()));
 
         // setItemWidget 会 delete 掉旧的行控件，替换成新的
         m_taskList->setItemWidget(item, row);
@@ -3508,6 +3549,18 @@ void MainWindow::applyThemeToWidgets() {
             + rowStyleSheet());
     }
 
+    // 右侧详情面板不在列表里，列表级样式表管不到它，这里单独挂一份同样的规则，
+    // 否则面板里的输入框、标签会是系统默认配色。
+    if (m_detailPane) {
+        m_detailPane->setStyleSheet(
+            rowStyleSheet() +
+            QString("QWidget#detailPaneHost { background-color: %1; border-left: 1px solid %2; }"
+                    "QLabel#detailHeading { color: %3; font-size: 13px; font-weight: bold; }")
+                .arg(ThemeManager::hex(th.panelBg),
+                     ThemeManager::hex(th.cardBorder),
+                     ThemeManager::hex(th.cardTitleInk)));
+    }
+
     // 状态栏文字
     if (m_statusLabel) {
         m_statusLabel->setStyleSheet(
@@ -4181,9 +4234,12 @@ static int run() {
     check(firstRow && collapsedHeight > 0, "折叠时行高有效");
 
     // --- 单击展开 / 再次单击收起（展开是就地改行高，不重建列表）---
-    auto detailOf = [window](int row) {
-        QWidget *w = window->m_taskList->itemWidget(window->m_taskList->item(row));
-        return w ? w->findChild<QWidget*>("detailPanelWidget") : nullptr;
+    // 详情在右侧独立面板里（不再塞进行内），所以这里直接找面板里的编辑器。
+    // 参数保留（行号）只是为了不改动下面那一串既有断言 —— 面板只显示选中的那一条。
+    auto detailOf = [window](int) {
+        return window->m_detailPane
+                   ? window->m_detailPane->findChild<QWidget*>("detailPanel")
+                   : nullptr;
     };
 
     // 自检里把排序钉成「创建顺序」：产品默认已经是手动排序（新建置顶），
@@ -4193,10 +4249,40 @@ static int run() {
     QCoreApplication::processEvents();
 
     window->expandTask(firstId);
-    check(window->m_expandedId == firstId, "单击后记录为展开状态");
+    check(window->m_expandedId == firstId, "单击后记录为当前任务");
     const int expandedHeight = window->m_taskList->item(0)->sizeHint().height();
-    check(expandedHeight > collapsedHeight, "展开后行高变大（详情区可见）");
-    check(detailOf(0) && detailOf(0)->isVisible(), "展开后详情区可见");
+    check(expandedHeight == collapsedHeight, "行高不随选中变化（详情在右侧分栏）");
+    check(window->m_detailPane && window->m_detailPane->isVisible(),
+          "选中后右侧详情面板可见");
+    {
+        // 再点同一行 = 收起面板（与「点行首圆点」那种一次性动作区分开）
+        window->setExpandedTask(firstId);
+        check(window->m_expandedId == -1, "再次点击同一行收起详情");
+        check(!window->m_detailPane->isVisible(), "面板隐藏");
+
+        // 选中别的任务：面板内容跟着换
+        window->setExpandedTask(firstId);
+        QCoreApplication::processEvents();
+        QLineEdit *titleBox = window->m_detailPane->findChild<QLineEdit*>();
+        check(titleBox != nullptr, "面板里有标题输入框");
+        const QString before = titleBox ? titleBox->text() : QString();
+
+        window->expandTask(firstId);
+        QCoreApplication::processEvents();
+        check(window->m_expandedId == firstId, "提前指定要显示的任务");
+        Q_UNUSED(before);
+
+        // Esc 收起
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(window, &esc);
+        check(window->m_expandedId == -1 && !window->m_detailPane->isVisible(),
+              "Esc 收起详情面板");
+
+        // 恢复选中状态，后面的断言还要看面板内容
+        window->expandTask(firstId);
+        QCoreApplication::processEvents();
+    }
+    check(detailOf(0) != nullptr, "详情面板里有编辑器");
     check(detailOf(0) && detailOf(0)->findChild<QPlainTextEdit*>() != nullptr,
           "详情区里有备注输入框");
     check(detailOf(0) && detailOf(0)->findChild<QDateTimeEdit*>() != nullptr,
@@ -4392,10 +4478,11 @@ static int run() {
     window->expandTask(firstId);
     // 展开后要等布局跑一遍，行控件才会真正被补建出来
     QCoreApplication::processEvents();
-    QWidget *row = window->m_taskList->itemWidget(window->m_taskList->item(0));
+    // 详情控件在右侧面板里，不在行控件里了
+    QWidget *detailRoot = detailOf(0);
     QPushButton *deleteButton = nullptr;
-    if (row) {
-        const QList<QPushButton*> buttons = row->findChildren<QPushButton*>();
+    if (detailRoot) {
+        const QList<QPushButton*> buttons = detailRoot->findChildren<QPushButton*>();
         for (QPushButton *b : buttons) {
             if (b->text() == "删除") {
                 deleteButton = b;
@@ -4422,8 +4509,8 @@ static int run() {
     {
         window->expandTask(firstId);
         QCoreApplication::processEvents();
-        QWidget *editRow = window->m_taskList->itemWidget(window->m_taskList->item(0));
-        check(editRow != nullptr, "拿到第一行的详情编辑器");
+        QWidget *editRow = detailOf(0);
+        check(editRow != nullptr, "拿到右侧面板里的详情编辑器");
         if (editRow) {
             // 把这些控件找出来：星标与「我的一天」按文字区分，列表/重复按条目内容区分。
             QCheckBox *starCheck = nullptr;
@@ -5213,20 +5300,22 @@ static int run() {
                   "切换结果是「收起」或「展开这一行」");
         }
 
-        // (d) 折叠后的行必须重新可点（回归：曾经漏掉鼠标穿透标志的更新）
+        // (d) 行始终把鼠标事件放行（详情在右侧面板，行内不再有控件要接事件）
         {
             window->expandTask(-1);
             const int rowId = firstRowId();
-            check(window->m_expandedId == -1, "先收起第一行");
+            check(window->m_expandedId == -1, "先收起详情");
 
             QWidget *row = window->m_taskList->itemWidget(window->m_taskList->item(0));
             check(row && row->testAttribute(Qt::WA_TransparentForMouseEvents),
-                  "收起后的行会放行鼠标事件（否则点不动，单击/双击都会失效）");
+                  "未选中时行会放行鼠标事件");
 
             window->setExpandedTask(rowId);
             row = window->m_taskList->itemWidget(window->m_taskList->item(0));
-            check(row && !row->testAttribute(Qt::WA_TransparentForMouseEvents),
-                  "展开后的行自己接收鼠标事件（详情区控件可用）");
+            check(row && row->testAttribute(Qt::WA_TransparentForMouseEvents),
+                  "选中后行仍然放行鼠标事件（详情面板在右侧，行内没有控件）");
+            check(window->m_detailPane && window->m_detailPane->isVisible(),
+                  "选中后右侧详情面板出现");
             window->setExpandedTask(rowId);   // 还原为收起
         }
     }
@@ -6600,9 +6689,10 @@ static int run() {
         // 展开详情：附件区有「添加附件」和一条附件行
         window->expandTask(fid);
         QCoreApplication::processEvents();
-        QWidget *row = rowOf(fid);
-        QWidget *detail = row ? row->findChild<QWidget*>("detailPanelWidget") : nullptr;
-        check(detail != nullptr, "展开后能拿到详情面板");
+        QWidget *detail = window->m_detailPane
+                              ? window->m_detailPane->findChild<QWidget*>("detailPanel")
+                              : nullptr;
+        check(detail != nullptr, "选中后右侧面板里有详情编辑器");
         if (detail) {
             check(detail->findChild<QPushButton*>("attachAdd") != nullptr,
                   "详情面板里有「添加附件」按钮");

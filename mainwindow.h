@@ -292,6 +292,10 @@ private:
     QWidget *m_categoryRow = nullptr;
 
     TaskListWidget *m_taskList = nullptr;
+    // 右侧详情分栏（隐藏时不占位）
+    QWidget *m_detailPane = nullptr;
+    QWidget *m_detailBody = nullptr;      // 每次切换任务重建内容
+    QLabel *m_detailHeading = nullptr;    // 面板顶部的任务标题
     QPushButton *m_sortButton = nullptr;
     QLabel *m_statusLabel = nullptr;
 
@@ -474,7 +478,10 @@ private:
     // 为什么：详情编辑器有 40 多个控件、6 个 lambda 和一堆堆分配。原来每行都
     // 建一个，185 行实测刷新一次要 20 秒（切列表卡一两秒就是这么来的）。
     // 改成建行时只在行控件上挂一个「按需构建」的闭包，真正展开时才构造。
-    void ensureDetailPanel(QWidget *row);
+    // 右侧详情面板：与列表分栏显示当前选中任务的详情。
+    // 选中哪条任务由 m_expandedId 表示（沿用旧名，语义已是「详情面板显示的任务」）。
+    QWidget *buildDetailPane();
+    void rebuildDetailPane();
     // 建立「建议」面板（放在搜索栏与列表之间）。
     void setupSuggestionPanel(QVBoxLayout *parentLayout);
     void setExpandedTask(int id);
