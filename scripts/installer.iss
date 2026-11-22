@@ -12,7 +12,7 @@
 
 #define AppName "CYSC 任务栏"
 #define AppNameEn "CYSC TaskBar"
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.1"
 #define AppExe "CYSC任务管理.exe"
 #define AppPublisher "CYSC TaskBar"
 
@@ -63,7 +63,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 [Files]
 ; 暂存目录里的全部内容（程序 + Qt DLL + 平台插件 + 图标）。
 ; 注意：Inno 里相对路径是相对 **.iss 文件所在目录**解析的，所以要从 scripts\ 回退两级。
-Source: "..\build\package\CYSC\*"; DestDir: "{app}"; \
+Source: "..\build\package\CYSC-0.2\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; VC++ 运行库（不进安装目录，只在安装时执行）
 Source: "..\build\package\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall

@@ -78,7 +78,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("CYSC TaskBar");
     QApplication::setOrganizationName("CYSC");
-    QApplication::setApplicationVersion("0.2.0");
+    QApplication::setApplicationVersion("0.2.1");
 
     // 偏好设置存成 INI 文件，而不是默认的注册表。
     //
